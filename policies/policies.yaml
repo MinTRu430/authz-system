@@ -1,0 +1,17 @@
+- id: R1
+  source: orders
+  target: payments
+  rpc: /payments.v1.Payments/Charge
+  effect: allow
+
+- id: R2
+  source: "*"
+  target: payments
+  rpc: /payments.v1.Payments/Refund
+  effect: deny
+
+- id: R3
+  source: "*"
+  target: "*"
+  rpc: "*"
+  effect: deny

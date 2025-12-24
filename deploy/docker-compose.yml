@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+  policy-server:
+    build:
+      context: ..
+      dockerfile: policy-server/Dockerfile
+    container_name: policy-server
+    ports:
+      - "8443:8443"
+    volumes:
+      - ../policies/policies.yaml:/app/policies.yaml:ro
+      - ../certs:/certs:ro
+      - ../policy-data:/data
+    environment:
+      - POLICY_FILE=/app/policies.yaml
+      - CERT_FILE=/certs/policy-server.pem
+      - KEY_FILE=/certs/policy-server-key.pem
+      - CA_FILE=/certs/ca.pem
+      - ADMIN_TOKEN=dev-admin-token
+      - AUDIT_FILE=/data/audit.log
+    networks: [authz-net]
+
+  payments:
+    build:
+      context: ..
+      dockerfile: services/payments/Dockerfile
+    container_name: payments
+    depends_on: [policy-server]
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+    volumes:
+      - ../certs:/certs:ro
+    environment:
+      - SERVICE_NAME=payments
+      - POLICY_URL=https://policy-server:8443
+      - CERT_FILE=/certs/payments.pem
+      - KEY_FILE=/certs/payments-key.pem
+      - CA_FILE=/certs/ca.pem
+      - POLICY_CERT_FILE=/certs/payments.pem
+      - POLICY_KEY_FILE=/certs/payments-key.pem
+      - POLICY_CA_FILE=/certs/ca.pem
+    networks: [authz-net]
+
+  orders:
+    build:
+      context: ..
+      dockerfile: services/orders/Dockerfile
+    container_name: orders
+    depends_on: [payments]
+    volumes:
+      - ../certs:/certs:ro
+    environment:
+      - CERT_FILE=/certs/orders.pem
+      - KEY_FILE=/certs/orders-key.pem
+      - CA_FILE=/certs/ca.pem
+    networks: [authz-net]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on: [policy-server, payments]
+    networks: [authz-net]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
+    networks: [authz-net]
+
+networks:
+  authz-net:
+    driver: bridge

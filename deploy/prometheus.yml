@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: policy-server
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    static_configs:
+      - targets: ["policy-server:8443"]
+
+  - job_name: payments
+    scheme: http
+    static_configs:
+      - targets: ["payments:9090"]

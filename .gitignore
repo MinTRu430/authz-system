@@ -1,0 +1,33 @@
+# Go
+/bin/
+/pkg/
+*.exe
+*.exe~
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Certificates and secrets
+certs/*.pem
+certs/*.key
+certs/*.srl
+
+# Runtime data
+policy-data/*
+!policy-data/.gitkeep
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Docker
+**/.dockerignore

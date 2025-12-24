@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package payments.v1;
+
+option go_package = "authz-system/api;paymentsv1";
+
+service Payments {
+  rpc Charge(ChargeRequest) returns (ChargeReply);
+  rpc Refund(RefundRequest) returns (RefundReply);
+}
+
+message ChargeRequest {
+  string order_id = 1;
+  int64 amount = 2;
+}
+
+message ChargeReply {
+  string status = 1;
+}
+
+message RefundRequest {
+  string payment_id = 1;
+  int64 amount = 2;
+}
+
+message RefundReply {
+  string status = 1;
+}
