@@ -1,0 +1,29 @@
+- id: B1
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.charge.requested
+  message_type: PaymentChargeRequested
+  effect: allow
+
+- id: B2
+  source: payments
+  target: orders
+  transport: broker
+  broker: nats
+  operation: consume
+  resource: orders.payment-events
+  message_type: PaymentCharged
+  effect: allow
+
+- id: B3
+  source: "*"
+  target: "*"
+  transport: broker
+  broker: "*"
+  operation: "*"
+  resource: "*"
+  message_type: "*"
+  effect: deny

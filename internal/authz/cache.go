@@ -6,11 +6,13 @@ import (
 )
 
 type cacheKey struct {
-	source    string
-	target    string
-	transport Transport
-	operation string
-	resource  string
+	source      string
+	target      string
+	transport   Transport
+	operation   string
+	resource    string
+	broker      string
+	messageType string
 }
 
 type cacheVal struct {
@@ -34,11 +36,13 @@ func NewDecisionCache(ttl time.Duration) *DecisionCache {
 func newCacheKey(req AuthzRequest) cacheKey {
 	req = req.Normalize()
 	return cacheKey{
-		source:    req.Source,
-		target:    req.Target,
-		transport: req.Transport,
-		operation: req.Operation,
-		resource:  req.Resource,
+		source:      req.Source,
+		target:      req.Target,
+		transport:   req.Transport,
+		operation:   req.Operation,
+		resource:    req.Resource,
+		broker:      req.Broker,
+		messageType: req.MessageType,
 	}
 }
 

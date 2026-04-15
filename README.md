@@ -35,6 +35,7 @@
 ### AuthZ Agent
 - библиотека, встраиваемая в микросервисы;
 - реализован в виде gRPC unary/stream interceptor’ов и HTTP middleware;
+- содержит общий broker abstraction layer для будущих Kafka/NATS adapters;
 - извлекает идентичность сервиса из mTLS-сертификата;
 - выполняет синхронную проверку прав перед gRPC или REST-вызовом.
 
@@ -89,6 +90,26 @@
   resource: /payments/refund
   effect: deny
 
+- id: R_BROKER_1
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.charge.requested
+  message_type: PaymentChargeRequested
+  effect: allow
+
+- id: R_BROKER_2
+  source: payments
+  target: orders
+  transport: broker
+  broker: nats
+  operation: consume
+  resource: orders.payment-events
+  message_type: PaymentCharged
+  effect: allow
+
 - id: R3
   source: "*"
   target: "*"
@@ -98,7 +119,9 @@
   effect: deny
 ```
 
-Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`. Для REST используется `transport: http`, `operation` содержит HTTP-метод, а `resource` содержит нормализованный путь без query-параметров.
+Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`. Для REST используется `transport: http`, `operation` содержит HTTP-метод, а `resource` содержит нормализованный путь без query-параметров. Для broker-сценариев `operation` принимает значения `publish` или `consume`, `resource` содержит topic/subject/queue, а `message_type` задаёт тип события.
+
+Отдельный пример broker-only политик находится в `policies/policies_broker_example.yaml`.
 
 ### Интерпретация политик доступа
 

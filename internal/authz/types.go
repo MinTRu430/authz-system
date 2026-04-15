@@ -12,11 +12,13 @@ const (
 )
 
 type AuthzRequest struct {
-	Source    string    `json:"source,omitempty"`
-	Target    string    `json:"target,omitempty"`
-	Transport Transport `json:"transport,omitempty"`
-	Operation string    `json:"operation,omitempty"`
-	Resource  string    `json:"resource,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	Target      string    `json:"target,omitempty"`
+	Transport   Transport `json:"transport,omitempty"`
+	Operation   string    `json:"operation,omitempty"`
+	Resource    string    `json:"resource,omitempty"`
+	Broker      string    `json:"broker,omitempty"`
+	MessageType string    `json:"message_type,omitempty"`
 
 	SourceService string `json:"source_service,omitempty"`
 	TargetService string `json:"target_service,omitempty"`
@@ -62,6 +64,12 @@ func (r AuthzRequest) Normalize() AuthzRequest {
 	}
 	if r.Resource == "" {
 		r.Resource = "*"
+	}
+	if r.Broker == "" {
+		r.Broker = "*"
+	}
+	if r.MessageType == "" {
+		r.MessageType = "*"
 	}
 	return r
 }
