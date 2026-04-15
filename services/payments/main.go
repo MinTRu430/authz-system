@@ -9,15 +9,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
+	"authz-system/internal/authz/kafkaadapter"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
+
+const kafkaDefaultTopic = "payments.requested"
 
 type paymentsServer struct {
 	paymentsv1.UnimplementedPaymentsServer
@@ -37,6 +42,26 @@ func mustEnv(k string) string {
 		log.Fatalf("missing env %s", k)
 	}
 	return v
+}
+
+func envDefault(k, fallback string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func splitCSV(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func mustServerTLSConfig(certFile, keyFile, caFile string) *tls.Config {
@@ -68,6 +93,48 @@ func mustServerCreds(certFile, keyFile, caFile string) credentials.TransportCred
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func runKafkaConsumer(cfg authz.Config) {
+	adapter, err := kafkaadapter.New(cfg)
+	if err != nil {
+		log.Fatalf("kafka authz adapter: %v", err)
+	}
+
+	topic := envDefault("KAFKA_TOPIC_PAYMENT_REQUESTED", kafkaDefaultTopic)
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  splitCSV(envDefault("KAFKA_BROKERS", "kafka:9092")),
+		Topic:    topic,
+		GroupID:  envDefault("KAFKA_GROUP_ID", "payments-demo"),
+		MinBytes: 1,
+		MaxBytes: 1 << 20,
+		MaxWait:  500 * time.Millisecond,
+	})
+	defer reader.Close()
+
+	log.Printf("payments Kafka consumer listening topic=%s group=%s", topic, envDefault("KAFKA_GROUP_ID", "payments-demo"))
+	for {
+		ctx := context.Background()
+		msg, err := reader.FetchMessage(ctx)
+		if err != nil {
+			log.Printf("kafka fetch error: %v", err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		if err := adapter.AuthorizeConsume(ctx, msg); err != nil {
+			log.Printf("KAFKA CONSUME DENY: topic=%s partition=%d offset=%d error=%v", msg.Topic, msg.Partition, msg.Offset, err)
+			_ = reader.CommitMessages(ctx, msg)
+			continue
+		}
+
+		source, _ := kafkaadapter.ServiceNameFromHeaders(msg.Headers)
+		messageType, _ := kafkaadapter.MessageTypeFromHeaders(msg.Headers)
+		log.Printf("KAFKA CONSUME OK: source=%s topic=%s message_type=%s offset=%d value=%s", source, msg.Topic, messageType, msg.Offset, strings.TrimSpace(string(msg.Value)))
+		if err := reader.CommitMessages(ctx, msg); err != nil {
+			log.Printf("kafka commit error: %v", err)
+		}
+	}
 }
 
 func main() {
@@ -107,6 +174,8 @@ func main() {
 			CAFile:   policyCA,
 		},
 	}
+
+	go runKafkaConsumer(cfg)
 
 	go func() {
 		mux := http.NewServeMux()

@@ -14,9 +14,21 @@ import (
 	"time"
 
 	paymentsv1 "authz-system/api"
+	"authz-system/internal/authz"
+	"authz-system/internal/authz/kafkaadapter"
 
+	"github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+)
+
+const (
+	kafkaRequestedTopic     = "payments.requested"
+	kafkaRequestedType      = "payment.requested.v1"
+	kafkaForcedRefundTopic  = "payments.refund.forced"
+	kafkaForcedRefundType   = "payment.refund.forced.v1"
+	kafkaDefaultTarget      = "payments"
+	kafkaDefaultServiceName = "orders"
 )
 
 func mustEnv(k string) string {
@@ -104,15 +116,109 @@ func callREST(cmd string) {
 	fmt.Printf("%s OK: %s\n", label, strings.TrimSpace(string(body)))
 }
 
+func splitCSV(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func kafkaAuthzConfig() authz.Config {
+	certFile := mustEnv("CERT_FILE")
+	keyFile := mustEnv("KEY_FILE")
+	caFile := mustEnv("CA_FILE")
+
+	return authz.Config{
+		TargetService: envDefault("KAFKA_TARGET_SERVICE", kafkaDefaultTarget),
+		PolicyURL:     mustEnv("POLICY_URL"),
+		FailOpen:      false,
+		Timeout:       250 * time.Millisecond,
+		CacheTTL:      2 * time.Second,
+		PolicyClientTLS: authz.TLSFiles{
+			CertFile: envDefault("POLICY_CERT_FILE", certFile),
+			KeyFile:  envDefault("POLICY_KEY_FILE", keyFile),
+			CAFile:   envDefault("POLICY_CA_FILE", caFile),
+		},
+	}
+}
+
+func callKafka(cmd string) {
+	var topic, messageType, label string
+	useAuthz := true
+
+	switch cmd {
+	case "kafka-publish":
+		topic = envDefault("KAFKA_TOPIC_PAYMENT_REQUESTED", kafkaRequestedTopic)
+		messageType = kafkaRequestedType
+		label = "Kafka Publish"
+	case "kafka-publish-deny":
+		topic = kafkaForcedRefundTopic
+		messageType = kafkaForcedRefundType
+		label = "Kafka Publish Deny"
+	case "kafka-publish-raw":
+		topic = envDefault("KAFKA_TOPIC_PAYMENT_REQUESTED", kafkaRequestedTopic)
+		messageType = kafkaRequestedType
+		label = "Kafka Raw Publish"
+		useAuthz = false
+	default:
+		log.Fatalf("unknown Kafka command %s", cmd)
+	}
+
+	writer := &kafka.Writer{
+		Addr:     kafka.TCP(splitCSV(envDefault("KAFKA_BROKERS", "kafka:9092"))...),
+		Topic:    topic,
+		Balancer: &kafka.LeastBytes{},
+	}
+	defer writer.Close()
+
+	sourceService := envDefault("SERVICE_NAME", kafkaDefaultServiceName)
+	msg := kafka.Message{
+		Key:   []byte(fmt.Sprintf("%s-%d", messageType, time.Now().UnixNano())),
+		Value: []byte(fmt.Sprintf(`{"order_id":"o-1","amount":100,"message_type":%q}`, messageType)),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if useAuthz {
+		adapter, err := kafkaadapter.New(kafkaAuthzConfig())
+		if err != nil {
+			log.Fatalf("%s adapter error: %v", label, err)
+		}
+		if err := adapter.Publish(ctx, writer, msg, sourceService, messageType); err != nil {
+			log.Fatalf("%s error: %v", label, err)
+		}
+	} else {
+		msg.Headers = []kafka.Header{
+			{Key: kafkaadapter.HeaderServiceName, Value: []byte(sourceService)},
+			{Key: kafkaadapter.HeaderMessageType, Value: []byte(messageType)},
+		}
+		if err := writer.WriteMessages(ctx, msg); err != nil {
+			log.Fatalf("%s error: %v", label, err)
+		}
+	}
+
+	fmt.Printf("%s OK: topic=%s message_type=%s\n", label, topic, messageType)
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
 
 	if cmd == "rest-charge" || cmd == "rest-refund" {
 		callREST(cmd)
+		return
+	}
+	if cmd == "kafka-publish" || cmd == "kafka-publish-deny" || cmd == "kafka-publish-raw" {
+		callKafka(cmd)
 		return
 	}
 
@@ -147,7 +253,7 @@ func main() {
 		}
 		fmt.Println("Refund OK:", resp.Status)
 	default:
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw")
 		os.Exit(2)
 	}
 }
