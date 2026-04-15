@@ -171,14 +171,14 @@ degrade-kafka-consume-test:
 	@echo "[2] Stop policy-server and start payments -> consume should be denied before processing"
 	docker compose -f docker-compose.yml stop policy-server
 	docker start payments
-	@sleep 5
-	@docker compose -f docker-compose.yml logs --tail=120 payments | grep "KAFKA CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: Kafka consume deny log" && exit 1)
+	@sleep 35
+	@docker compose -f docker-compose.yml logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: Kafka consume deny log" && exit 1)
 	@echo
 	@echo "[3] Restore policy-server and verify Kafka publish/consume recovers"
 	docker compose -f docker-compose.yml up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
-	@sleep 3
-	docker compose -f docker-compose.yml logs --tail=120 payments | grep "KAFKA CONSUME OK"
+	@sleep 10
+	docker compose -f docker-compose.yml logs --since=20s payments | grep "KAFKA CONSUME OK"
 	@echo
 	@echo "[+] Kafka consume degradation test finished"
