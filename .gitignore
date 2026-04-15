@@ -22,6 +22,10 @@ policy-data/*
 # Logs
 *.log
 
+# Generated experiment artifacts
+results/final*/
+!results/README.md
+
 # IDE
 .vscode/
 .idea/

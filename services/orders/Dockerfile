@@ -15,8 +15,10 @@ RUN protoc -I ./api \
   ./api/payments.proto
 
 RUN go build -o /out/orders ./services/orders
+RUN go build -o /out/transportbench ./cmd/transportbench
 
 FROM alpine:3.19
 WORKDIR /app
 COPY --from=build /out/orders /app/orders
+COPY --from=build /out/transportbench /app/transportbench
 CMD ["sh", "-c", "sleep infinity"]

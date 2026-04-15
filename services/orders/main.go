@@ -198,9 +198,11 @@ func callKafka(cmd string) {
 	}
 
 	writer := &kafka.Writer{
-		Addr:     kafka.TCP(splitCSV(envDefault("KAFKA_BROKERS", "kafka:9092"))...),
-		Topic:    topic,
-		Balancer: &kafka.LeastBytes{},
+		Addr:         kafka.TCP(splitCSV(envDefault("KAFKA_BROKERS", "kafka:9092"))...),
+		Topic:        topic,
+		Balancer:     &kafka.LeastBytes{},
+		BatchSize:    1,
+		BatchTimeout: 10 * time.Millisecond,
 	}
 	defer writer.Close()
 

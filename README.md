@@ -290,6 +290,35 @@ make -C deploy degrade-nats-test
 make -C deploy degrade-nats-consume-test
 ```
 
+### Финальные сравнительные эксперименты
+
+Единый набор финальных сценариев сохраняет артефакты в `results/final/<timestamp>/`:
+
+```bash
+make -C deploy final-functional
+make -C deploy final-bench
+```
+
+Полный прогон функциональных, reload/degrade и benchmark-сценариев:
+
+```bash
+make -C deploy final-suite
+```
+
+Для короткого benchmark-прогона можно уменьшить объём:
+
+```bash
+FINAL_N=100 FINAL_C=10 FINAL_WARMUP=10 make -C deploy final-bench
+```
+
+Финальные скрипты сохраняют:
+
+- `summary.csv` — allow/deny/reload/degrade по каждому транспорту;
+- `bench_summary.csv` — latency/throughput по `grpc`, `rest`, `kafka`, `nats`;
+- `payments_metrics_*.prom` и `policy_metrics_*.prom` — снимки Prometheus-метрик;
+- `audit_*.log` — audit tail после reload-сценариев;
+- `docker_*.log` — логи сервисов для подтверждения consume/fail-closed.
+
 ### Просмотр журнала аудита
 ```bash
 make -C deploy audit

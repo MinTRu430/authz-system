@@ -42,11 +42,11 @@ services:
     ports:
       - "8443:8443"
     volumes:
-      - ../policies/policies.yaml:/app/policies.yaml:ro
+      - ../policies:/app/policies:ro
       - ../certs:/certs:ro
       - ../policy-data:/data
     environment:
-      - POLICY_FILE=/app/policies.yaml
+      - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
       - KEY_FILE=/certs/policy-server-key.pem
       - CA_FILE=/certs/ca.pem

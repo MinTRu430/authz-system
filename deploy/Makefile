@@ -1,7 +1,7 @@
 COMPOSE=docker compose -f docker-compose.yml
 
 
-.PHONY: certs up down build restart logs test test-rest test-kafka test-nats status audit reload bench degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
+.PHONY: certs up down build restart logs test test-rest test-kafka test-nats status audit reload bench final-functional final-bench final-suite degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
 
 certs:
 	./certs/generate-certs.sh
@@ -82,6 +82,17 @@ audit:
 
 bench:
 	../scripts/bench.sh charge 200
+
+final-functional:
+	../scripts/final-functional.sh
+
+
+final-bench:
+	../scripts/final-bench.sh
+
+
+final-suite:
+	../scripts/final-suite.sh
 
 
 load:
