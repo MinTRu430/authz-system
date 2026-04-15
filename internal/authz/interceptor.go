@@ -46,9 +46,10 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 
 		method := info.FullMethod
 		target := cfg.TargetService
+		authReq := NewGRPCAuthzRequest(source, target, method)
 
 		if cache != nil {
-			if resp, ok := cache.Get(source, target, method); ok {
+			if resp, ok := cache.Get(authReq); ok {
 				authzCacheTotal.WithLabelValues("hit").Inc()
 
 				// STRICT FAIL-CLOSED (anti fail-open-through-cache):
@@ -74,7 +75,7 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 		}
 
 		start := time.Now()
-		dec, err := client.Check(ctx, CheckRequest{SourceService: source, TargetService: target, RPCMethod: method})
+		dec, err := client.Check(ctx, authReq)
 		authzPolicyLatency.Observe(time.Since(start).Seconds())
 
 		if err != nil {
@@ -94,7 +95,7 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 		}
 
 		if cache != nil {
-			cache.Put(source, target, method, dec)
+			cache.Put(authReq, dec)
 		}
 
 		if !dec.Allow {

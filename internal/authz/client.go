@@ -137,6 +137,7 @@ func (c *PolicyClient) Check(ctx context.Context, req CheckRequest) (CheckRespon
 		return CheckResponse{}, ErrPolicyUnavailable
 	}
 
+	req = req.Normalize()
 	body, err := json.Marshal(req)
 	if err != nil {
 		return CheckResponse{}, err

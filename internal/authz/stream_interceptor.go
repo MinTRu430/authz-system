@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -35,10 +36,23 @@ func NewStreamInterceptor(cfg Config) grpc.StreamServerInterceptor {
 
 		method := info.FullMethod
 		target := cfg.TargetService
+		authReq := NewGRPCAuthzRequest(source, target, method)
 
 		if cache != nil {
-			if resp, ok := cache.Get(source, target, method); ok {
+			if resp, ok := cache.Get(authReq); ok {
 				authzCacheTotal.WithLabelValues("hit").Inc()
+
+				// STRICT FAIL-CLOSED (anti fail-open-through-cache):
+				// На allow cache-hit дополнительно проверяем, что policy-server доступен.
+				// Если недоступен и FailOpen=false -> deny.
+				if resp.Allow && !cfg.FailOpen {
+					if !client.Probe(150 * time.Millisecond) {
+						authzChecksTotal.WithLabelValues("unavailable").Inc()
+						FailClosedInc()
+						return status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
+					}
+				}
+
 				if !resp.Allow {
 					authzChecksTotal.WithLabelValues("deny").Inc()
 					return status.Error(codes.PermissionDenied, "denied: "+resp.Reason)
@@ -50,7 +64,7 @@ func NewStreamInterceptor(cfg Config) grpc.StreamServerInterceptor {
 		}
 
 		start := time.Now()
-		dec, err := client.Check(ss.Context(), CheckRequest{SourceService: source, TargetService: target, RPCMethod: method})
+		dec, err := client.Check(ss.Context(), authReq)
 		authzPolicyLatency.Observe(time.Since(start).Seconds())
 
 		if err != nil {
@@ -58,11 +72,17 @@ func NewStreamInterceptor(cfg Config) grpc.StreamServerInterceptor {
 			if cfg.FailOpen {
 				return handler(srv, ss)
 			}
-			return status.Error(codes.Unavailable, "policy unavailable: "+err.Error())
+			if errors.Is(err, ErrPolicyUnavailable) {
+				FailClosedInc()
+				return status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
+			}
+
+			FailClosedInc()
+			return status.Error(codes.PermissionDenied, "fail-closed: policy error: "+err.Error())
 		}
 
 		if cache != nil {
-			cache.Put(source, target, method, dec)
+			cache.Put(authReq, dec)
 		}
 
 		if !dec.Allow {

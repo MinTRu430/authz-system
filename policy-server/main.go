@@ -13,63 +13,24 @@ import (
 	"sync"
 	"time"
 
+	"authz-system/internal/authz"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
 )
 
-type Rule struct {
-	ID     string `yaml:"id"`
-	Source string `yaml:"source"`
-	Target string `yaml:"target"`
-	RPC    string `yaml:"rpc"`
-	Effect string `yaml:"effect"`
-}
-
-type CheckRequest struct {
-	SourceService string `json:"source_service"`
-	TargetService string `json:"target_service"`
-	RPCMethod     string `json:"rpc_method"`
-}
-
-type CheckResponse struct {
-	Allow   bool   `json:"allow"`
-	Reason  string `json:"reason"`
-	RuleID  string `json:"rule_id,omitempty"`
-	Version string `json:"version"`
-}
-
 type Store struct {
 	mu      sync.RWMutex
-	rules   []Rule
+	rules   []authz.PolicyRule
 	version string
 }
 
-func match(rule, val string) bool { return rule == "*" || rule == val }
-
-func (s *Store) Decide(req CheckRequest) CheckResponse {
+func (s *Store) Decide(req authz.AuthzRequest) authz.CheckResponse {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	resp := CheckResponse{Allow: false, Reason: "default deny", Version: s.version}
-
-	for _, r := range s.rules {
-		if match(r.Source, req.SourceService) &&
-			match(r.Target, req.TargetService) &&
-			(match(r.RPC, "*") || match(r.RPC, req.RPCMethod)) {
-			resp.RuleID = r.ID
-			resp.Version = s.version
-			if r.Effect == "allow" {
-				resp.Allow = true
-				resp.Reason = "matched allow rule"
-			} else {
-				resp.Allow = false
-				resp.Reason = "matched deny rule"
-			}
-			return resp
-		}
-	}
-	return resp
+	return authz.DecidePolicy(s.rules, s.version, req)
 }
 
 func computeVersion(data []byte) string {
@@ -78,16 +39,16 @@ func computeVersion(data []byte) string {
 	return short + "-" + time.Now().Format("20060102T150405")
 }
 
-func loadRulesFromFile(path string) ([]Rule, string, error) {
+func loadRulesFromFile(path string) ([]authz.PolicyRule, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
 	}
-	var rules []Rule
+	var rules []authz.PolicyRule
 	if err := yaml.Unmarshal(data, &rules); err != nil {
 		return nil, "", err
 	}
-	return rules, computeVersion(data), nil
+	return authz.NormalizePolicyRules(rules), computeVersion(data), nil
 }
 
 func (s *Store) ReloadFromFile(path string) error {
@@ -277,7 +238,7 @@ func main() {
 			return
 		}
 
-		var req CheckRequest
+		var req authz.AuthzRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			decisionTotal.WithLabelValues("error").Inc()
 			http.Error(w, "bad request", http.StatusBadRequest)
