@@ -10,15 +10,15 @@ import (
 var (
 	authzChecksTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "authz_checks_total", Help: "Total authz checks"},
-		[]string{"result", "transport"}, // allow|deny|unauthenticated|unavailable, grpc|http|broker
+		[]string{"result", "transport", "broker"},
 	)
 	authzCacheTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "authz_cache_total", Help: "Authz cache hit/miss"},
-		[]string{"type", "transport"}, // hit|miss, grpc|http|broker
+		[]string{"type", "transport", "broker"},
 	)
 	authzPolicyLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{Name: "authz_policy_check_latency_seconds", Help: "Policy check latency seconds"},
-		[]string{"transport"},
+		[]string{"transport", "broker"},
 	)
 
 	// NEW: fail-closed counter for эксплуатационного анализа
@@ -43,15 +43,15 @@ func FailClosedInc() {
 }
 
 func recordAuthzCheck(result string, req AuthzRequest) {
-	authzChecksTotal.WithLabelValues(result, metricTransport(req)).Inc()
+	authzChecksTotal.WithLabelValues(result, metricTransport(req), metricBroker(req)).Inc()
 }
 
 func recordAuthzCache(kind string, req AuthzRequest) {
-	authzCacheTotal.WithLabelValues(kind, metricTransport(req)).Inc()
+	authzCacheTotal.WithLabelValues(kind, metricTransport(req), metricBroker(req)).Inc()
 }
 
 func observeAuthzPolicyLatency(req AuthzRequest, d time.Duration) {
-	authzPolicyLatency.WithLabelValues(metricTransport(req)).Observe(d.Seconds())
+	authzPolicyLatency.WithLabelValues(metricTransport(req), metricBroker(req)).Observe(d.Seconds())
 }
 
 func metricTransport(req AuthzRequest) string {
@@ -60,4 +60,12 @@ func metricTransport(req AuthzRequest) string {
 		return "unknown"
 	}
 	return string(req.Transport)
+}
+
+func metricBroker(req AuthzRequest) string {
+	req = req.Normalize()
+	if req.Transport != TransportBroker || req.Broker == "" || req.Broker == "*" {
+		return "none"
+	}
+	return req.Broker
 }

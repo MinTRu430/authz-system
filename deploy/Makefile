@@ -1,7 +1,7 @@
 COMPOSE=docker compose -f docker-compose.yml
 
 
-.PHONY: certs up down build restart logs test test-rest test-kafka status audit reload bench degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test
+.PHONY: certs up down build restart logs test test-rest test-kafka test-nats status audit reload bench degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
 
 certs:
 	./certs/generate-certs.sh
@@ -47,6 +47,17 @@ test-kafka:
 	@echo "=== TEST Kafka deny: forbidden forced refund publish ==="
 	- docker exec orders /app/orders kafka-publish-deny
 
+test-nats:
+	@echo "=== TEST NATS allow: orders publish payment.requested ==="
+	docker exec orders /app/orders nats-publish
+	@sleep 2
+	@echo ""
+	@echo "=== TEST NATS consume: payments processes payment.requested ==="
+	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	@echo ""
+	@echo "=== TEST NATS deny: forbidden forced refund publish ==="
+	- docker exec orders /app/orders nats-publish-deny
+
 status:
 	@echo "Prometheus: http://localhost:9091"
 	@echo "Grafana:    http://localhost:3000 (admin/admin)"
@@ -54,6 +65,7 @@ status:
 	@echo "Payments metrics: http://localhost:9090/metrics"
 	@echo "Payments REST:    https://localhost:8080 (mTLS)"
 	@echo "Kafka:            kafka:9092 inside docker network"
+	@echo "NATS:             nats://nats:4222 inside docker network, monitoring http://localhost:8222"
 
 reload:
 	@echo "=== Reload policies (admin, mTLS) ==="
@@ -182,3 +194,45 @@ degrade-kafka-consume-test:
 	docker compose -f docker-compose.yml logs --since=20s payments | grep "KAFKA CONSUME OK"
 	@echo
 	@echo "[+] Kafka consume degradation test finished"
+
+
+degrade-nats-test:
+	@echo "=== NATS publish degradation test (fail-closed) ==="
+	@echo "[1] Baseline check: policy-server up -> NATS publish should succeed"
+	docker exec orders /app/orders nats-publish
+	@echo
+	@echo "[2] Stop policy-server -> NATS publish should be denied (fail-closed)"
+	docker compose -f docker-compose.yml stop policy-server
+	@sleep 1
+	@docker exec orders /app/orders nats-publish && (echo "UNEXPECTED: NATS publish succeeded" && exit 1) || echo "OK: denied as expected"
+	@echo
+	@echo "[3] Start policy-server -> NATS publish should succeed again"
+	docker compose -f docker-compose.yml up -d policy-server
+	@sleep 3
+	docker exec orders /app/orders nats-publish
+	@echo
+	@echo "[+] NATS publish degradation test finished"
+
+
+degrade-nats-consume-test:
+	@echo "=== NATS consume degradation test (fail-closed) ==="
+	@echo "[1] Baseline check: policy-server up -> NATS consume should succeed"
+	docker exec orders /app/orders nats-publish
+	@sleep 2
+	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	@echo
+	@echo "[2] Stop policy-server and inject an authorized-format message directly into NATS"
+	docker compose -f docker-compose.yml stop policy-server
+	@sleep 1
+	docker exec orders /app/orders nats-publish-raw
+	@sleep 3
+	@docker compose -f docker-compose.yml logs --since=15s payments | grep "NATS CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: NATS consume deny log" && exit 1)
+	@echo
+	@echo "[3] Restore policy-server and verify NATS publish/consume recovers"
+	docker compose -f docker-compose.yml up -d policy-server
+	@sleep 3
+	docker exec orders /app/orders nats-publish
+	@sleep 3
+	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	@echo
+	@echo "[+] NATS consume degradation test finished"

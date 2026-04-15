@@ -56,6 +56,36 @@
   message_type: payment.refund.forced.v1
   effect: deny
 
+- id: R_NATS_1
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: publish
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R_NATS_2
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: consume
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R_NATS_3
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: publish
+  resource: payments.refund.forced
+  message_type: payment.refund.forced.v1
+  effect: deny
+
 - id: R4
   source: svc-4
   target: svc-4

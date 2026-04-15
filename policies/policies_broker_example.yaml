@@ -29,6 +29,36 @@
   effect: deny
 
 - id: B4
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: publish
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: B5
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: consume
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: B6
+  source: orders
+  target: payments
+  transport: broker
+  broker: nats
+  operation: publish
+  resource: payments.refund.forced
+  message_type: payment.refund.forced.v1
+  effect: deny
+
+- id: B7
   source: "*"
   target: "*"
   transport: broker

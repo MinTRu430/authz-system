@@ -25,6 +25,15 @@ services:
       retries: 20
     networks: [authz-net]
 
+  nats:
+    image: nats:2.10
+    container_name: nats
+    command: ["-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks: [authz-net]
+
   policy-server:
     build:
       context: ..
@@ -55,6 +64,8 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+      nats:
+        condition: service_started
     ports:
       - "50051:50051"
       - "8080:8080"
@@ -73,6 +84,8 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC_PAYMENT_REQUESTED=payments.requested
       - KAFKA_GROUP_ID=payments-demo
+      - NATS_URL=nats://nats:4222
+      - NATS_SUBJECT_PAYMENT_REQUESTED=payments.requested
     networks: [authz-net]
 
   orders:
@@ -85,6 +98,8 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+      nats:
+        condition: service_started
     volumes:
       - ../certs:/certs:ro
     environment:
@@ -100,6 +115,9 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TARGET_SERVICE=payments
       - KAFKA_TOPIC_PAYMENT_REQUESTED=payments.requested
+      - NATS_URL=nats://nats:4222
+      - NATS_TARGET_SERVICE=payments
+      - NATS_SUBJECT_PAYMENT_REQUESTED=payments.requested
     networks: [authz-net]
 
   prometheus:

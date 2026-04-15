@@ -148,7 +148,12 @@ func runNATSSubscriber(cfg authz.Config) {
 		log.Fatalf("nats authz adapter: %v", err)
 	}
 
-	conn, err := nats.Connect(envDefault("NATS_URL", "nats://nats:4222"))
+	conn, err := nats.Connect(
+		envDefault("NATS_URL", "nats://nats:4222"),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(20),
+		nats.ReconnectWait(500*time.Millisecond),
+	)
 	if err != nil {
 		log.Fatalf("nats connect: %v", err)
 	}

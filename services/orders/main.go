@@ -256,7 +256,7 @@ func callNATS(cmd string) {
 		log.Fatalf("unknown NATS command %s", cmd)
 	}
 
-	conn, err := nats.Connect(envDefault("NATS_URL", "nats://nats:4222"))
+	conn, err := nats.Connect(envDefault("NATS_URL", "nats://nats:4222"), nats.Timeout(2*time.Second))
 	if err != nil {
 		log.Fatalf("%s connect error: %v", label, err)
 	}
