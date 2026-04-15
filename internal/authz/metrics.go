@@ -14,6 +14,15 @@ var (
 	authzPolicyLatency = prometheus.NewHistogram(
 		prometheus.HistogramOpts{Name: "authz_policy_check_latency_seconds", Help: "Policy check latency seconds"},
 	)
+
+	// NEW: fail-closed counter for эксплуатационного анализа
+	authzFailClosedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "authz_fail_closed_total",
+			Help: "Total requests denied due to fail-closed mode (policy-server unavailable)",
+		},
+	)
+
 	registered = false
 )
 
@@ -21,6 +30,10 @@ func RegisterMetrics() {
 	if registered {
 		return
 	}
-	prometheus.MustRegister(authzChecksTotal, authzCacheTotal, authzPolicyLatency)
+	prometheus.MustRegister(authzChecksTotal, authzCacheTotal, authzPolicyLatency, authzFailClosedTotal)
 	registered = true
+}
+
+func FailClosedInc() {
+	authzFailClosedTotal.Inc()
 }

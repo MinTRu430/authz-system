@@ -1,0 +1,11 @@
+# HELP authz_cache_total Authz cache hit/miss
+# TYPE authz_cache_total counter
+authz_cache_total{type="hit"} 31099
+authz_cache_total{type="miss"} 19101
+# HELP authz_checks_total Total authz checks
+# TYPE authz_checks_total counter
+authz_checks_total{result="allow"} 31255
+authz_checks_total{result="unavailable"} 18945
+# HELP authz_fail_closed_total Total requests denied due to fail-closed mode (policy-server unavailable)
+# TYPE authz_fail_closed_total counter
+authz_fail_closed_total 18945

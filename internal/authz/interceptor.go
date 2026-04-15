@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -49,10 +50,23 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 		if cache != nil {
 			if resp, ok := cache.Get(source, target, method); ok {
 				authzCacheTotal.WithLabelValues("hit").Inc()
+
+				// STRICT FAIL-CLOSED (anti fail-open-through-cache):
+				// На allow cache-hit дополнительно проверяем, что policy-server доступен.
+				// Если недоступен и FailOpen=false -> deny.
+				if resp.Allow && !cfg.FailOpen {
+					if !client.Probe(150 * time.Millisecond) {
+						authzChecksTotal.WithLabelValues("unavailable").Inc()
+						FailClosedInc()
+						return nil, status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
+					}
+				}
+
 				if !resp.Allow {
 					authzChecksTotal.WithLabelValues("deny").Inc()
 					return nil, status.Error(codes.PermissionDenied, "denied: "+resp.Reason)
 				}
+
 				authzChecksTotal.WithLabelValues("allow").Inc()
 				return handler(ctx, req)
 			}
@@ -65,10 +79,18 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 
 		if err != nil {
 			authzChecksTotal.WithLabelValues("unavailable").Inc()
+
 			if cfg.FailOpen {
 				return handler(ctx, req)
 			}
-			return nil, status.Error(codes.Unavailable, "policy unavailable: "+err.Error())
+
+			if errors.Is(err, ErrPolicyUnavailable) {
+				FailClosedInc()
+				return nil, status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
+			}
+
+			FailClosedInc()
+			return nil, status.Error(codes.PermissionDenied, "fail-closed: policy error: "+err.Error())
 		}
 
 		if cache != nil {
