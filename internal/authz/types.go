@@ -1,10 +1,13 @@
 package authz
 
+import "strings"
+
 type Transport string
 
 const (
 	TransportGRPC   Transport = "grpc"
-	TransportREST   Transport = "rest"
+	TransportHTTP   Transport = "http"
+	TransportREST   Transport = TransportHTTP
 	TransportBroker Transport = "broker"
 )
 
@@ -44,6 +47,7 @@ func NewGRPCAuthzRequest(source, target, fullMethod string) AuthzRequest {
 }
 
 func (r AuthzRequest) Normalize() AuthzRequest {
+	r.Transport = normalizeTransport(r.Transport)
 	if r.Source == "" {
 		r.Source = r.SourceService
 	}
@@ -60,4 +64,13 @@ func (r AuthzRequest) Normalize() AuthzRequest {
 		r.Resource = "*"
 	}
 	return r
+}
+
+func normalizeTransport(t Transport) Transport {
+	switch strings.ToLower(string(t)) {
+	case "rest":
+		return TransportHTTP
+	default:
+		return Transport(strings.ToLower(string(t)))
+	}
 }

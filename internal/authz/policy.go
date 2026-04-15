@@ -15,7 +15,7 @@ type PolicyRule struct {
 }
 
 func (r PolicyRule) Normalize() PolicyRule {
-	r.Transport = Transport(strings.ToLower(string(r.Transport)))
+	r.Transport = normalizeTransport(r.Transport)
 	if r.RPC != "" {
 		if r.Transport == "" {
 			r.Transport = TransportGRPC

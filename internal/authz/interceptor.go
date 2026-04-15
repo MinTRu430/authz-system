@@ -21,16 +21,9 @@ type Config struct {
 }
 
 func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
-	RegisterMetrics()
-
-	client, err := NewPolicyClient(cfg.PolicyURL, cfg.Timeout, cfg.PolicyClientTLS)
+	authorizer, err := NewAuthorizer(cfg)
 	if err != nil {
-		panic("authz: init policy client: " + err.Error())
-	}
-
-	var cache *DecisionCache
-	if cfg.CacheTTL > 0 {
-		cache = NewDecisionCache(cfg.CacheTTL)
+		panic("authz: init authorizer: " + err.Error())
 	}
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -40,7 +33,7 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 
 		source, err := ExtractServiceIdentity(ctx)
 		if err != nil {
-			authzChecksTotal.WithLabelValues("unauthenticated").Inc()
+			recordAuthzCheck("unauthenticated", NewGRPCAuthzRequest("", cfg.TargetService, info.FullMethod))
 			return nil, status.Error(codes.Unauthenticated, "mtls identity error: "+err.Error())
 		}
 
@@ -48,62 +41,14 @@ func NewUnaryInterceptor(cfg Config) grpc.UnaryServerInterceptor {
 		target := cfg.TargetService
 		authReq := NewGRPCAuthzRequest(source, target, method)
 
-		if cache != nil {
-			if resp, ok := cache.Get(authReq); ok {
-				authzCacheTotal.WithLabelValues("hit").Inc()
-
-				// STRICT FAIL-CLOSED (anti fail-open-through-cache):
-				// На allow cache-hit дополнительно проверяем, что policy-server доступен.
-				// Если недоступен и FailOpen=false -> deny.
-				if resp.Allow && !cfg.FailOpen {
-					if !client.Probe(150 * time.Millisecond) {
-						authzChecksTotal.WithLabelValues("unavailable").Inc()
-						FailClosedInc()
-						return nil, status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
-					}
-				}
-
-				if !resp.Allow {
-					authzChecksTotal.WithLabelValues("deny").Inc()
-					return nil, status.Error(codes.PermissionDenied, "denied: "+resp.Reason)
-				}
-
-				authzChecksTotal.WithLabelValues("allow").Inc()
-				return handler(ctx, req)
-			}
-			authzCacheTotal.WithLabelValues("miss").Inc()
-		}
-
-		start := time.Now()
-		dec, err := client.Check(ctx, authReq)
-		authzPolicyLatency.Observe(time.Since(start).Seconds())
-
+		_, err = authorizer.Authorize(ctx, authReq)
 		if err != nil {
-			authzChecksTotal.WithLabelValues("unavailable").Inc()
-
-			if cfg.FailOpen {
-				return handler(ctx, req)
+			if errors.Is(err, ErrDenied) || errors.Is(err, ErrFailClosed) {
+				return nil, status.Error(codes.PermissionDenied, err.Error())
 			}
-
-			if errors.Is(err, ErrPolicyUnavailable) {
-				FailClosedInc()
-				return nil, status.Error(codes.PermissionDenied, "fail-closed: policy-server unavailable")
-			}
-
-			FailClosedInc()
-			return nil, status.Error(codes.PermissionDenied, "fail-closed: policy error: "+err.Error())
+			return nil, status.Error(codes.PermissionDenied, "authz error: "+err.Error())
 		}
 
-		if cache != nil {
-			cache.Put(authReq, dec)
-		}
-
-		if !dec.Allow {
-			authzChecksTotal.WithLabelValues("deny").Inc()
-			return nil, status.Error(codes.PermissionDenied, "denied: "+dec.Reason)
-		}
-
-		authzChecksTotal.WithLabelValues("allow").Inc()
 		return handler(ctx, req)
 	}
 }
