@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -15,7 +16,9 @@ import (
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
 	"authz-system/internal/authz/kafkaadapter"
+	"authz-system/internal/authz/natsadapter"
 
+	"github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
@@ -23,6 +26,8 @@ import (
 )
 
 const kafkaDefaultTopic = "payments.requested"
+
+const natsDefaultSubject = "payments.requested"
 
 type paymentsServer struct {
 	paymentsv1.UnimplementedPaymentsServer
@@ -137,6 +142,53 @@ func runKafkaConsumer(cfg authz.Config) {
 	}
 }
 
+func runNATSSubscriber(cfg authz.Config) {
+	adapter, err := natsadapter.New(cfg)
+	if err != nil {
+		log.Fatalf("nats authz adapter: %v", err)
+	}
+
+	conn, err := nats.Connect(envDefault("NATS_URL", "nats://nats:4222"))
+	if err != nil {
+		log.Fatalf("nats connect: %v", err)
+	}
+	defer conn.Close()
+
+	subject := envDefault("NATS_SUBJECT_PAYMENT_REQUESTED", natsDefaultSubject)
+	sub, err := conn.SubscribeSync(subject)
+	if err != nil {
+		log.Fatalf("nats subscribe subject=%s: %v", subject, err)
+	}
+	defer sub.Unsubscribe()
+
+	if err := conn.Flush(); err != nil {
+		log.Fatalf("nats flush subscription: %v", err)
+	}
+
+	log.Printf("payments NATS subscriber listening subject=%s", subject)
+	for {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if errors.Is(err, nats.ErrTimeout) {
+			continue
+		}
+		if err != nil {
+			log.Printf("nats receive error: %v", err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		ctx := context.Background()
+		if err := adapter.AuthorizeConsume(ctx, msg); err != nil {
+			log.Printf("NATS CONSUME DENY: subject=%s error=%v", msg.Subject, err)
+			continue
+		}
+
+		source, _ := natsadapter.ServiceNameFromHeaders(msg.Header)
+		messageType, _ := natsadapter.MessageTypeFromHeaders(msg.Header)
+		log.Printf("NATS CONSUME OK: source=%s subject=%s message_type=%s value=%s", source, msg.Subject, messageType, strings.TrimSpace(string(msg.Data)))
+	}
+}
+
 func main() {
 	serviceName := mustEnv("SERVICE_NAME")
 	policyURL := mustEnv("POLICY_URL")
@@ -176,6 +228,7 @@ func main() {
 	}
 
 	go runKafkaConsumer(cfg)
+	go runNATSSubscriber(cfg)
 
 	go func() {
 		mux := http.NewServeMux()

@@ -16,7 +16,9 @@ import (
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
 	"authz-system/internal/authz/kafkaadapter"
+	"authz-system/internal/authz/natsadapter"
 
+	"github.com/nats-io/nats.go"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -29,6 +31,13 @@ const (
 	kafkaForcedRefundType   = "payment.refund.forced.v1"
 	kafkaDefaultTarget      = "payments"
 	kafkaDefaultServiceName = "orders"
+
+	natsRequestedSubject    = "payments.requested"
+	natsRequestedType       = "payment.requested.v1"
+	natsForcedRefundSubject = "payments.refund.forced"
+	natsForcedRefundType    = "payment.refund.forced.v1"
+	natsDefaultTarget       = "payments"
+	natsDefaultServiceName  = "orders"
 )
 
 func mustEnv(k string) string {
@@ -147,6 +156,25 @@ func kafkaAuthzConfig() authz.Config {
 	}
 }
 
+func natsAuthzConfig() authz.Config {
+	certFile := mustEnv("CERT_FILE")
+	keyFile := mustEnv("KEY_FILE")
+	caFile := mustEnv("CA_FILE")
+
+	return authz.Config{
+		TargetService: envDefault("NATS_TARGET_SERVICE", natsDefaultTarget),
+		PolicyURL:     mustEnv("POLICY_URL"),
+		FailOpen:      false,
+		Timeout:       250 * time.Millisecond,
+		CacheTTL:      2 * time.Second,
+		PolicyClientTLS: authz.TLSFiles{
+			CertFile: envDefault("POLICY_CERT_FILE", certFile),
+			KeyFile:  envDefault("POLICY_KEY_FILE", keyFile),
+			CAFile:   envDefault("POLICY_CA_FILE", caFile),
+		},
+	}
+}
+
 func callKafka(cmd string) {
 	var topic, messageType, label string
 	useAuthz := true
@@ -206,9 +234,71 @@ func callKafka(cmd string) {
 	fmt.Printf("%s OK: topic=%s message_type=%s\n", label, topic, messageType)
 }
 
+func callNATS(cmd string) {
+	var subject, messageType, label string
+	useAuthz := true
+
+	switch cmd {
+	case "nats-publish":
+		subject = envDefault("NATS_SUBJECT_PAYMENT_REQUESTED", natsRequestedSubject)
+		messageType = natsRequestedType
+		label = "NATS Publish"
+	case "nats-publish-deny":
+		subject = natsForcedRefundSubject
+		messageType = natsForcedRefundType
+		label = "NATS Publish Deny"
+	case "nats-publish-raw":
+		subject = envDefault("NATS_SUBJECT_PAYMENT_REQUESTED", natsRequestedSubject)
+		messageType = natsRequestedType
+		label = "NATS Raw Publish"
+		useAuthz = false
+	default:
+		log.Fatalf("unknown NATS command %s", cmd)
+	}
+
+	conn, err := nats.Connect(envDefault("NATS_URL", "nats://nats:4222"))
+	if err != nil {
+		log.Fatalf("%s connect error: %v", label, err)
+	}
+	defer conn.Close()
+
+	sourceService := envDefault("SERVICE_NAME", natsDefaultServiceName)
+	payload := []byte(fmt.Sprintf(`{"order_id":"o-1","amount":100,"message_type":%q}`, messageType))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if useAuthz {
+		adapter, err := natsadapter.New(natsAuthzConfig())
+		if err != nil {
+			log.Fatalf("%s adapter error: %v", label, err)
+		}
+		if err := adapter.Publish(ctx, conn, subject, payload, sourceService, messageType); err != nil {
+			log.Fatalf("%s error: %v", label, err)
+		}
+	} else {
+		msg := &nats.Msg{
+			Subject: subject,
+			Header: nats.Header{
+				natsadapter.HeaderServiceName: []string{sourceService},
+				natsadapter.HeaderMessageType: []string{messageType},
+			},
+			Data: payload,
+		}
+		if err := conn.PublishMsg(msg); err != nil {
+			log.Fatalf("%s error: %v", label, err)
+		}
+	}
+
+	if err := conn.FlushWithContext(ctx); err != nil {
+		log.Fatalf("%s flush error: %v", label, err)
+	}
+	fmt.Printf("%s OK: subject=%s message_type=%s\n", label, subject, messageType)
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|nats-publish|nats-publish-deny|nats-publish-raw")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -219,6 +309,10 @@ func main() {
 	}
 	if cmd == "kafka-publish" || cmd == "kafka-publish-deny" || cmd == "kafka-publish-raw" {
 		callKafka(cmd)
+		return
+	}
+	if cmd == "nats-publish" || cmd == "nats-publish-deny" || cmd == "nats-publish-raw" {
+		callNATS(cmd)
 		return
 	}
 
@@ -253,7 +347,7 @@ func main() {
 		}
 		fmt.Println("Refund OK:", resp.Status)
 	default:
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|nats-publish|nats-publish-deny|nats-publish-raw")
 		os.Exit(2)
 	}
 }
