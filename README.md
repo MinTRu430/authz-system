@@ -60,21 +60,30 @@
 - id: R1
   source: orders
   target: payments
-  rpc: /payments.v1.Payments/Charge
+  transport: grpc
+  operation: /payments.v1.Payments/Charge
+  resource: "*"
   effect: allow
 
 - id: R2
   source: "*"
   target: payments
-  rpc: /payments.v1.Payments/Refund
+  transport: grpc
+  operation: /payments.v1.Payments/Refund
+  resource: "*"
   effect: deny
 
 - id: R3
   source: "*"
   target: "*"
-  rpc: "*"
+  transport: "*"
+  operation: "*"
+  resource: "*"
   effect: deny
 ```
+
+Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`.
+
 ### Интерпретация политик доступа
 
 - сервис `orders` имеет право вызывать метод `Charge` сервиса `payments`;

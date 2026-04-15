@@ -11,13 +11,17 @@ cat > "$OUT" <<YAML
 - id: R1
   source: orders
   target: payments
-  rpc: /payments.v1.Payments/Charge
+  transport: grpc
+  operation: /payments.v1.Payments/Charge
+  resource: "*"
   effect: allow
 
 - id: R2
   source: "*"
   target: payments
-  rpc: /payments.v1.Payments/Refund
+  transport: grpc
+  operation: /payments.v1.Payments/Refund
+  resource: "*"
   effect: deny
 
 YAML
@@ -30,7 +34,9 @@ cat >> "$OUT" <<YAML
 - id: R$i
   source: svc-$i
   target: svc-$i
-  rpc: /dummy.v1.Dummy/Op$i
+  transport: grpc
+  operation: /dummy.v1.Dummy/Op$i
+  resource: "*"
   effect: allow
 
 YAML
@@ -41,8 +47,10 @@ cat >> "$OUT" <<YAML
 - id: R3
   source: "*"
   target: "*"
-  rpc: "*"
+  transport: "*"
+  operation: "*"
+  resource: "*"
   effect: deny
 YAML
 
-echo "[+] Generated $OUT with $N rules (R1,R2 + fillers + R3 deny-all at end)"
+echo "[+] Generated $OUT with $N transport-aware rules (R1,R2 + fillers + R3 deny-all at end)"
