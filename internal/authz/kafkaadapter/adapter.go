@@ -64,7 +64,11 @@ func (a *Adapter) Publish(ctx context.Context, writer *kafka.Writer, msg kafka.M
 		return err
 	}
 
-	msg.Topic = topic
+	if writer == nil || writer.Topic == "" {
+		msg.Topic = topic
+	} else {
+		msg.Topic = ""
+	}
 	msg.Headers = upsertHeader(msg.Headers, HeaderServiceName, sourceService)
 	msg.Headers = upsertHeader(msg.Headers, HeaderMessageType, messageType)
 	return writer.WriteMessages(ctx, msg)

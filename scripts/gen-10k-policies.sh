@@ -40,12 +40,42 @@ cat > "$OUT" <<YAML
   resource: /payments/refund
   effect: deny
 
+- id: R5
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R6
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: consume
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R7
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.refund.forced
+  message_type: payment.refund.forced.v1
+  effect: deny
+
 YAML
 
 # 2) Добавляем лишние правила (не матчатся под реальные вызовы),
 # чтобы нагрузить обработку политик (поиск/сопоставление/объём).
 # IMPORTANT: финальный deny-all мы добавим последним.
-for i in $(seq 6 "$N"); do
+for i in $(seq 9 "$N"); do
 cat >> "$OUT" <<YAML
 - id: R$i
   source: svc-$i
@@ -60,7 +90,7 @@ done
 
 # 3) deny-all в конце (как у вас):
 cat >> "$OUT" <<YAML
-- id: R5
+- id: R8
   source: "*"
   target: "*"
   transport: "*"
@@ -69,4 +99,4 @@ cat >> "$OUT" <<YAML
   effect: deny
 YAML
 
-echo "[+] Generated $OUT with $N transport-aware rules (grpc/rest basics + fillers + R5 deny-all at end)"
+echo "[+] Generated $OUT with $N transport-aware rules (grpc/rest/kafka basics + fillers + R8 deny-all at end)"

@@ -26,6 +26,36 @@
   resource: /payments/refund
   effect: deny
 
+- id: R_KAFKA_1
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R_KAFKA_2
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: consume
+  resource: payments.requested
+  message_type: payment.requested.v1
+  effect: allow
+
+- id: R_KAFKA_3
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.refund.forced
+  message_type: payment.refund.forced.v1
+  effect: deny
+
 - id: R4
   source: svc-4
   target: svc-4

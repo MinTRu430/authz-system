@@ -4,7 +4,7 @@
 
 Проект представляет собой **экспериментальный прототип системы централизованной межсервисной авторизации** для микросервисной архитектуры, реализованный на языке Go.
 
-Система предназначена для контроля доступа между сервисами на уровне **gRPC- и HTTP/REST-вызовов** и реализует принципы **Zero Trust** и **default deny**.  
+Система предназначена для контроля доступа между сервисами на уровне **gRPC-, HTTP/REST- и Kafka-взаимодействий** и реализует принципы **Zero Trust** и **default deny**.  
 Проект разработан в рамках производственной практики и используется как практическая часть магистерского исследования.
 
 ---
@@ -35,13 +35,14 @@
 ### AuthZ Agent
 - библиотека, встраиваемая в микросервисы;
 - реализован в виде gRPC unary/stream interceptor’ов и HTTP middleware;
-- содержит общий broker abstraction layer для будущих Kafka/NATS adapters;
+- содержит общий broker abstraction layer и Kafka adapter;
 - извлекает идентичность сервиса из mTLS-сертификата;
-- выполняет синхронную проверку прав перед gRPC или REST-вызовом.
+- выполняет синхронную проверку прав перед gRPC, REST или Kafka publish/consume.
 
 ### Демонстрационные сервисы
 - **orders** — сервис-клиент, инициирующий межсервисные вызовы;
 - **payments** — защищённый сервис (методы `Charge` и `Refund`).
+- Kafka demo — `orders` публикует событие `payment.requested.v1`, `payments` читает и обрабатывает его после authz check.
 
 ### Наблюдаемость
 - **Prometheus** — сбор метрик;
@@ -96,19 +97,29 @@
   transport: broker
   broker: kafka
   operation: publish
-  resource: payments.charge.requested
-  message_type: PaymentChargeRequested
+  resource: payments.requested
+  message_type: payment.requested.v1
   effect: allow
 
 - id: R_BROKER_2
-  source: payments
-  target: orders
+  source: orders
+  target: payments
   transport: broker
-  broker: nats
+  broker: kafka
   operation: consume
-  resource: orders.payment-events
-  message_type: PaymentCharged
+  resource: payments.requested
+  message_type: payment.requested.v1
   effect: allow
+
+- id: R_BROKER_3
+  source: orders
+  target: payments
+  transport: broker
+  broker: kafka
+  operation: publish
+  resource: payments.refund.forced
+  message_type: payment.refund.forced.v1
+  effect: deny
 
 - id: R3
   source: "*"
@@ -122,6 +133,15 @@
 Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`. Для REST используется `transport: http`, `operation` содержит HTTP-метод, а `resource` содержит нормализованный путь без query-параметров. Для broker-сценариев `operation` принимает значения `publish` или `consume`, `resource` содержит topic/subject/queue, а `message_type` задаёт тип события.
 
 Отдельный пример broker-only политик находится в `policies/policies_broker_example.yaml`.
+
+### Kafka demo contract
+
+Kafka adapter использует общий broker abstraction layer и не меняет core-логику авторизации. В demo-сценарии metadata сообщения передаётся через Kafka headers:
+
+- `X-Service-Name` — сервис-источник сообщения;
+- `X-Message-Type` — тип события.
+
+Это demo transport contract. Для production-сценариев service identity должна подтверждаться механизмами брокера, mTLS/SASL, подписью сообщения или другим криптографически защищённым способом.
 
 ### Интерпретация политик доступа
 
@@ -178,6 +198,7 @@ make -C deploy restart
 В ходе запуска будут подняты следующие контейнеры:
 
 - `policy-server` — сервис централизованной авторизации;
+- `kafka` — локальный Apache Kafka broker для async demo;
 - `payments` — сервис платежей;
 - `orders` — сервис заказов;
 - `prometheus` — сбор метрик;
@@ -194,6 +215,7 @@ docker ps
 ```bash
 make -C deploy test
 make -C deploy test-rest
+make -C deploy test-kafka
 ```
 
 **Ожидаемый результат:**
@@ -202,6 +224,9 @@ make -C deploy test-rest
 - Вызов метода `Refund` завершается ошибкой `PermissionDenied`.
 - REST-вызов `POST /payments/charge` завершается успешно;
 - REST-вызов `POST /payments/refund` завершается ошибкой `403 Forbidden`.
+- Kafka publish `payment.requested.v1` завершается успешно;
+- Kafka consumer `payments` обрабатывает разрешённое сообщение;
+- Kafka publish `payment.refund.forced.v1` блокируется политикой.
 
 Полученный результат подтверждает корректную работу механизма централизованной межсервисной авторизации и применение политик доступа.
 
@@ -222,6 +247,8 @@ make -C deploy reload
 ```bash
 make -C deploy degrade-test
 make -C deploy degrade-rest-test
+make -C deploy degrade-kafka-test
+make -C deploy degrade-kafka-consume-test
 ```
 
 ### Просмотр журнала аудита
