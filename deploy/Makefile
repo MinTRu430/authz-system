@@ -1,7 +1,7 @@
 COMPOSE=docker compose -f docker-compose.yml
 
 
-.PHONY: certs up down build restart logs test status audit reload bench
+.PHONY: certs up down build restart logs test test-rest status audit reload bench degrade-test degrade-rest-test
 
 certs:
 	./certs/generate-certs.sh
@@ -29,11 +29,19 @@ test:
 	@echo "=== TEST deny: Refund ==="
 	- docker exec orders /app/orders refund
 
+test-rest:
+	@echo "=== TEST REST allow: POST /payments/charge ==="
+	docker exec orders /app/orders rest-charge
+	@echo ""
+	@echo "=== TEST REST deny: POST /payments/refund ==="
+	- docker exec orders /app/orders rest-refund
+
 status:
 	@echo "Prometheus: http://localhost:9091"
 	@echo "Grafana:    http://localhost:3000 (admin/admin)"
 	@echo "Policy metrics:   https://localhost:8443/metrics"
 	@echo "Payments metrics: http://localhost:9090/metrics"
+	@echo "Payments REST:    https://localhost:8080 (mTLS)"
 
 reload:
 	@echo "=== Reload policies (admin, mTLS) ==="
@@ -104,3 +112,21 @@ degrade-test:
 	@echo
 	@echo "[+] Degradation test finished"
 
+
+degrade-rest-test:
+	@echo "=== REST degradation test (fail-closed) ==="
+	@echo "[1] Baseline check: policy-server up -> REST charge should succeed"
+	docker exec orders /app/orders rest-charge
+	@echo
+	@echo "[2] Stop policy-server -> REST charge should be denied (fail-closed)"
+	docker compose -f docker-compose.yml stop policy-server
+	@sleep 1
+	@echo "Calling REST charge while policy-server is DOWN..."
+	@docker exec orders /app/orders rest-charge && (echo "UNEXPECTED: REST charge succeeded" && exit 1) || echo "OK: denied as expected"
+	@echo
+	@echo "[3] Start policy-server -> REST charge should succeed again"
+	docker compose -f docker-compose.yml up -d policy-server
+	@sleep 1
+	docker exec orders /app/orders rest-charge
+	@echo
+	@echo "[+] REST degradation test finished"

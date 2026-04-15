@@ -4,7 +4,7 @@
 
 Проект представляет собой **экспериментальный прототип системы централизованной межсервисной авторизации** для микросервисной архитектуры, реализованный на языке Go.
 
-Система предназначена для контроля доступа между сервисами на уровне **gRPC-вызовов** и реализует принципы **Zero Trust** и **default deny**.  
+Система предназначена для контроля доступа между сервисами на уровне **gRPC- и HTTP/REST-вызовов** и реализует принципы **Zero Trust** и **default deny**.  
 Проект разработан в рамках производственной практики и используется как практическая часть магистерского исследования.
 
 ---
@@ -34,9 +34,9 @@
 
 ### AuthZ Agent
 - библиотека, встраиваемая в микросервисы;
-- реализован в виде gRPC unary и stream interceptor’ов;
+- реализован в виде gRPC unary/stream interceptor’ов и HTTP middleware;
 - извлекает идентичность сервиса из mTLS-сертификата;
-- выполняет синхронную проверку прав перед вызовом RPC.
+- выполняет синхронную проверку прав перед gRPC или REST-вызовом.
 
 ### Демонстрационные сервисы
 - **orders** — сервис-клиент, инициирующий межсервисные вызовы;
@@ -73,6 +73,22 @@
   resource: "*"
   effect: deny
 
+- id: R_HTTP_1
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/charge
+  effect: allow
+
+- id: R_HTTP_2
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/refund
+  effect: deny
+
 - id: R3
   source: "*"
   target: "*"
@@ -82,7 +98,7 @@
   effect: deny
 ```
 
-Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`.
+Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`. Для REST используется `transport: http`, `operation` содержит HTTP-метод, а `resource` содержит нормализованный путь без query-параметров.
 
 ### Интерпретация политик доступа
 
@@ -154,12 +170,15 @@ docker ps
 
 ```bash
 make -C deploy test
+make -C deploy test-rest
 ```
 
 **Ожидаемый результат:**
 
 - Вызов метода `Charge` завершается успешно;
 - Вызов метода `Refund` завершается ошибкой `PermissionDenied`.
+- REST-вызов `POST /payments/charge` завершается успешно;
+- REST-вызов `POST /payments/refund` завершается ошибкой `403 Forbidden`.
 
 Полученный результат подтверждает корректную работу механизма централизованной межсервисной авторизации и применение политик доступа.
 
@@ -173,6 +192,13 @@ make -C deploy test
 
 ```bash
 make -C deploy reload
+```
+
+### Проверка fail-closed
+
+```bash
+make -C deploy degrade-test
+make -C deploy degrade-rest-test
 ```
 
 ### Просмотр журнала аудита
@@ -197,8 +223,10 @@ URL: http://localhost:9091
 Основные метрики:
 
 - `policy_decisions_total` — количество принятых решений по политикам;
-- `authz_checks_total` — количество проверок авторизации;
-- `authz_policy_check_latency_seconds` — задержка проверки политик.
+- `authz_checks_total` — количество проверок авторизации с метками `result` и `transport`;
+- `authz_cache_total` — cache hit/miss с меткой `transport`;
+- `authz_policy_check_latency_seconds` — задержка проверки политик с меткой `transport`;
+- `authz_fail_closed_total` — количество блокировок в режиме fail-closed.
 
 ### Grafana
 

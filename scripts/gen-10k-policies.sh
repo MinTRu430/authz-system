@@ -24,12 +24,28 @@ cat > "$OUT" <<YAML
   resource: "*"
   effect: deny
 
+- id: R3
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/charge
+  effect: allow
+
+- id: R4
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/refund
+  effect: deny
+
 YAML
 
-# 2) Добавляем N-3 "лишних" правил (не матчатся под реальные вызовы),
+# 2) Добавляем лишние правила (не матчатся под реальные вызовы),
 # чтобы нагрузить обработку политик (поиск/сопоставление/объём).
 # IMPORTANT: финальный deny-all мы добавим последним.
-for i in $(seq 4 "$N"); do
+for i in $(seq 6 "$N"); do
 cat >> "$OUT" <<YAML
 - id: R$i
   source: svc-$i
@@ -44,7 +60,7 @@ done
 
 # 3) deny-all в конце (как у вас):
 cat >> "$OUT" <<YAML
-- id: R3
+- id: R5
   source: "*"
   target: "*"
   transport: "*"
@@ -53,4 +69,4 @@ cat >> "$OUT" <<YAML
   effect: deny
 YAML
 
-echo "[+] Generated $OUT with $N transport-aware rules (R1,R2 + fillers + R3 deny-all at end)"
+echo "[+] Generated $OUT with $N transport-aware rules (grpc/rest basics + fillers + R5 deny-all at end)"

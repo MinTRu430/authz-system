@@ -29,6 +29,7 @@ services:
     depends_on: [policy-server]
     ports:
       - "50051:50051"
+      - "8080:8080"
       - "9090:9090"
     volumes:
       - ../certs:/certs:ro
@@ -55,6 +56,7 @@ services:
       - CERT_FILE=/certs/orders.pem
       - KEY_FILE=/certs/orders-key.pem
       - CA_FILE=/certs/ca.pem
+      - PAYMENTS_REST_URL=https://payments:8080
     networks: [authz-net]
 
   prometheus:

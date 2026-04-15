@@ -10,6 +10,22 @@
   rpc: /payments.v1.Payments/Refund
   effect: deny
 
+- id: R_HTTP_1
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/charge
+  effect: allow
+
+- id: R_HTTP_2
+  source: orders
+  target: payments
+  transport: http
+  operation: POST
+  resource: /payments/refund
+  effect: deny
+
 - id: R4
   source: svc-4
   target: svc-4
@@ -59995,5 +60011,7 @@
 - id: R3
   source: "*"
   target: "*"
-  rpc: "*"
+  transport: "*"
+  operation: "*"
+  resource: "*"
   effect: deny

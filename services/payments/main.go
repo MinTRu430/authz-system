@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"log"
 	"net"
 	"net/http"
@@ -38,7 +39,7 @@ func mustEnv(k string) string {
 	return v
 }
 
-func mustServerCreds(certFile, keyFile, caFile string) credentials.TransportCredentials {
+func mustServerTLSConfig(certFile, keyFile, caFile string) *tls.Config {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		log.Fatalf("load cert/key: %v", err)
@@ -57,7 +58,16 @@ func mustServerCreds(certFile, keyFile, caFile string) credentials.TransportCred
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 	}
-	return credentials.NewTLS(tlsCfg)
+	return tlsCfg
+}
+
+func mustServerCreds(certFile, keyFile, caFile string) credentials.TransportCredentials {
+	return credentials.NewTLS(mustServerTLSConfig(certFile, keyFile, caFile))
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func main() {
@@ -97,6 +107,24 @@ func main() {
 			CAFile:   policyCA,
 		},
 	}
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /payments/charge", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]string{"status": "charged"})
+		})
+		mux.HandleFunc("POST /payments/refund", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]string{"status": "refunded"})
+		})
+
+		srv := &http.Server{
+			Addr:      ":8080",
+			Handler:   authz.NewHTTPMiddleware(cfg)(mux),
+			TLSConfig: mustServerTLSConfig(certFile, keyFile, caFile),
+		}
+		log.Println("payments REST listening on :8080 (mTLS + authz)")
+		log.Fatal(srv.ListenAndServeTLS("", ""))
+	}()
 
 	s := grpc.NewServer(
 		grpc.Creds(mustServerCreds(certFile, keyFile, caFile)),
