@@ -1,6 +1,6 @@
 services:
   kafka:
-    image: apache/kafka:latest
+    image: apache/kafka:4.2.0
     container_name: kafka
     ports:
       - "9092:9092"
@@ -23,8 +23,22 @@ services:
       retries: 20
     networks: [authz-net]
 
+  kafka-init:
+    image: apache/kafka:4.2.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.requested --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.refund.forced --partitions 1 --replication-factor 1
+    networks: [authz-net]
+
   nats:
-    image: nats:2.10
+    image: nats:2.10.29
     container_name: nats
     command: ["-m", "8222"]
     ports:
@@ -42,7 +56,7 @@ services:
     volumes:
       - ../policies:/app/policies:ro
       - ../certs:/certs:ro
-      - ../policy-data:/data
+      - policy-data:/data
     environment:
       - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
@@ -62,6 +76,8 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats:
         condition: service_started
     ports:
@@ -96,6 +112,8 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats:
         condition: service_started
     volumes:
@@ -139,3 +157,6 @@ services:
 networks:
   authz-net:
     driver: bridge
+
+volumes:
+  policy-data:

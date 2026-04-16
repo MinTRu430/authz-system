@@ -1,4 +1,6 @@
-COMPOSE=docker compose -f docker-compose.yml
+DEPLOY_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+ROOT_DIR := $(abspath $(DEPLOY_DIR)/..)
+COMPOSE := docker compose -f $(DEPLOY_DIR)/docker-compose.yml
 
 
 .PHONY: certs up down build restart logs status audit reload \
@@ -8,7 +10,7 @@ COMPOSE=docker compose -f docker-compose.yml
 	chaos-reload chaos-policy-flap
 
 certs:
-	../certs/generate-certs.sh
+	$(ROOT_DIR)/certs/generate-certs.sh
 
 up:
 	$(COMPOSE) up --build -d
@@ -49,10 +51,10 @@ test-kafka:
 	@echo "=== TEST Kafka consume: payments processes payment.requested ==="
 	@deadline=$$(( $$(date +%s) + 60 )); \
 	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
-	  docker compose -f docker-compose.yml logs --since=60s payments | grep -q "KAFKA CONSUME OK" && exit 0; \
+	  $(COMPOSE) logs --since=60s payments | grep -q "KAFKA CONSUME OK" && exit 0; \
 	  sleep 2; \
 	done; \
-	docker compose -f docker-compose.yml logs --tail=200 payments; \
+	$(COMPOSE) logs --tail=200 payments; \
 	exit 1
 	@echo ""
 	@echo "=== TEST Kafka deny: forbidden forced refund publish ==="
@@ -65,10 +67,10 @@ test-nats:
 	@echo "=== TEST NATS consume: payments processes payment.requested ==="
 	@deadline=$$(( $$(date +%s) + 20 )); \
 	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
-	  docker compose -f docker-compose.yml logs --since=20s payments | grep -q "NATS CONSUME OK" && exit 0; \
+	  $(COMPOSE) logs --since=20s payments | grep -q "NATS CONSUME OK" && exit 0; \
 	  sleep 2; \
 	done; \
-	docker compose -f docker-compose.yml logs --tail=200 payments; \
+	$(COMPOSE) logs --tail=200 payments; \
 	exit 1
 	@echo ""
 	@echo "=== TEST NATS deny: forbidden forced refund publish ==="
@@ -88,75 +90,75 @@ status:
 reload:
 	@echo "=== Reload policies (admin, mTLS) ==="
 	curl -k -X POST https://localhost:8443/v1/policies/reload \
-	  --cert ../certs/orders.pem --key ../certs/orders-key.pem --cacert ../certs/ca.pem \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
 
 audit:
 	@echo "=== AUDIT LOG (admin, mTLS) ==="
 	curl -k https://localhost:8443/v1/audit/tail \
-	  --cert ../certs/orders.pem --key ../certs/orders-key.pem --cacert ../certs/ca.pem \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" || true
 
 
 bench:
-	../scripts/bench.sh charge 200
+	$(ROOT_DIR)/scripts/bench.sh charge 200
 
 final-functional:
-	../scripts/final-functional.sh
+	$(ROOT_DIR)/scripts/final-functional.sh
 
 
 final-bench:
-	../scripts/final-bench.sh
+	$(ROOT_DIR)/scripts/final-bench.sh
 
 
 final-suite:
-	../scripts/final-suite.sh
+	$(ROOT_DIR)/scripts/final-suite.sh
 
 
 final-demo: restart test-all status
 
 
 load:
-	go run ../cmd/loadtest \
+	cd $(ROOT_DIR) && go run ./cmd/loadtest \
 	  -mode charge -n 5000 -c 50 \
-	  -ca ../certs/ca.pem \
-	  -cert ../certs/orders.pem \
-	  -key ../certs/orders-key.pem \
+	  -ca certs/ca.pem \
+	  -cert certs/orders.pem \
+	  -key certs/orders-key.pem \
 	  -servername payments \
 	  -addr localhost:50051
 
 
 load-deny:
-	go run ../cmd/loadtest \
+	cd $(ROOT_DIR) && go run ./cmd/loadtest \
 	  -mode refund -n 5000 -c 50 \
-	  -ca ../certs/ca.pem \
-	  -cert ../certs/orders.pem \
-	  -key ../certs/orders-key.pem \
+	  -ca certs/ca.pem \
+	  -cert certs/orders.pem \
+	  -key certs/orders-key.pem \
 	  -servername payments \
 	  -addr localhost:50051
 
 
 load-matrix:
-	../scripts/load-matrix.sh charge 5000
+	$(ROOT_DIR)/scripts/load-matrix.sh charge 5000
 
 
 
 
 degrade-down:
 	@echo "=== Degradation: stop policy-server ==="
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 
 degrade-up:
 	@echo "=== Degradation: start policy-server ==="
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 
 degrade-all: degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
 
 chaos-reload:
-	cd .. && ./scripts/reload-loop.sh 60 2
+	$(ROOT_DIR)/scripts/reload-loop.sh 60 2
 
 chaos-policy-flap:
-	cd .. && ./scripts/policy-flap.sh 60 3 7
+	$(ROOT_DIR)/scripts/policy-flap.sh 60 3 7
 
 degrade-test:
 	@echo "=== Degradation test (fail-closed) ==="
@@ -164,13 +166,13 @@ degrade-test:
 	docker exec orders /app/orders charge
 	@echo
 	@echo "[2] Stop policy-server -> Charge should be denied (fail-closed)"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	@sleep 1
 	@echo "Calling charge while policy-server is DOWN..."
 	@docker exec orders /app/orders charge && (echo "UNEXPECTED: charge succeeded" && exit 1) || echo "OK: denied as expected"
 	@echo
 	@echo "[3] Start policy-server -> Charge should succeed again"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 1
 	docker exec orders /app/orders charge
 	@echo
@@ -183,13 +185,13 @@ degrade-rest-test:
 	docker exec orders /app/orders rest-charge
 	@echo
 	@echo "[2] Stop policy-server -> REST charge should be denied (fail-closed)"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	@sleep 1
 	@echo "Calling REST charge while policy-server is DOWN..."
 	@docker exec orders /app/orders rest-charge && (echo "UNEXPECTED: REST charge succeeded" && exit 1) || echo "OK: denied as expected"
 	@echo
 	@echo "[3] Start policy-server -> REST charge should succeed again"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 1
 	docker exec orders /app/orders rest-charge
 	@echo
@@ -202,12 +204,12 @@ degrade-kafka-test:
 	docker exec orders /app/orders kafka-publish
 	@echo
 	@echo "[2] Stop policy-server -> Kafka publish should be denied (fail-closed)"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	@sleep 1
 	@docker exec orders /app/orders kafka-publish && (echo "UNEXPECTED: Kafka publish succeeded" && exit 1) || echo "OK: denied as expected"
 	@echo
 	@echo "[3] Start policy-server -> Kafka publish should succeed again"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@echo
@@ -217,21 +219,21 @@ degrade-kafka-test:
 degrade-kafka-consume-test:
 	@echo "=== Kafka consume degradation test (fail-closed) ==="
 	@echo "[1] Stop payments consumer and inject an authorized-format message directly into Kafka"
-	docker compose -f docker-compose.yml stop payments
+	$(COMPOSE) stop payments
 	docker exec orders /app/orders kafka-publish-raw
 	@echo
 	@echo "[2] Stop policy-server and start payments -> consume should be denied before processing"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	docker start payments
 	@sleep 35
-	@docker compose -f docker-compose.yml logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: Kafka consume deny log" && exit 1)
+	@$(COMPOSE) logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: Kafka consume deny log" && exit 1)
 	@echo
 	@echo "[3] Restore policy-server and verify Kafka publish/consume recovers"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@sleep 10
-	docker compose -f docker-compose.yml logs --since=20s payments | grep "KAFKA CONSUME OK"
+	$(COMPOSE) logs --since=20s payments | grep "KAFKA CONSUME OK"
 	@echo
 	@echo "[+] Kafka consume degradation test finished"
 
@@ -242,12 +244,12 @@ degrade-nats-test:
 	docker exec orders /app/orders nats-publish
 	@echo
 	@echo "[2] Stop policy-server -> NATS publish should be denied (fail-closed)"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	@sleep 1
 	@docker exec orders /app/orders nats-publish && (echo "UNEXPECTED: NATS publish succeeded" && exit 1) || echo "OK: denied as expected"
 	@echo
 	@echo "[3] Start policy-server -> NATS publish should succeed again"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@echo
@@ -259,20 +261,20 @@ degrade-nats-consume-test:
 	@echo "[1] Baseline check: policy-server up -> NATS consume should succeed"
 	docker exec orders /app/orders nats-publish
 	@sleep 2
-	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	$(COMPOSE) logs --since=20s payments | grep "NATS CONSUME OK"
 	@echo
 	@echo "[2] Stop policy-server and inject an authorized-format message directly into NATS"
-	docker compose -f docker-compose.yml stop policy-server
+	$(COMPOSE) stop policy-server
 	@sleep 1
 	docker exec orders /app/orders nats-publish-raw
 	@sleep 3
-	@docker compose -f docker-compose.yml logs --since=15s payments | grep "NATS CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: NATS consume deny log" && exit 1)
+	@$(COMPOSE) logs --since=15s payments | grep "NATS CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: NATS consume deny log" && exit 1)
 	@echo
 	@echo "[3] Restore policy-server and verify NATS publish/consume recovers"
-	docker compose -f docker-compose.yml up -d policy-server
+	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@sleep 3
-	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	$(COMPOSE) logs --since=20s payments | grep "NATS CONSUME OK"
 	@echo
 	@echo "[+] NATS consume degradation test finished"

@@ -1,11 +1,11 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.24.11-alpine3.22 AS build
 WORKDIR /src
-COPY ../go.mod ../go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
-COPY .. .
+COPY . .
 RUN go build -o /out/policy-server ./policy-server
 
-FROM alpine:3.19
+FROM alpine:3.22.2
 WORKDIR /app
 COPY --from=build /out/policy-server /app/policy-server
 EXPOSE 8443

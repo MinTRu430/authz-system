@@ -42,6 +42,10 @@ func FailClosedInc() {
 	authzFailClosedTotal.Inc()
 }
 
+func RecordAuthzCheck(result string, req AuthzRequest) {
+	recordAuthzCheck(result, req)
+}
+
 func recordAuthzCheck(result string, req AuthzRequest) {
 	authzChecksTotal.WithLabelValues(result, metricTransport(req), metricBroker(req)).Inc()
 }

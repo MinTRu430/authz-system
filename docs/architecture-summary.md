@@ -55,7 +55,7 @@ Policies are mounted as a directory in Docker Compose so reload sees file update
 
 ## gRPC Adapter
 
-The gRPC adapter is implemented as unary and stream interceptors.
+The gRPC adapter lives in `internal/authz/grpcadapter` and is implemented as unary and stream interceptors.
 
 Flow:
 
@@ -69,7 +69,7 @@ Legacy `rpc` policy rules are preserved for backward compatibility.
 
 ## REST Adapter
 
-The REST adapter is implemented as HTTP middleware.
+The REST adapter lives in `internal/authz/httpadapter` and is implemented as HTTP middleware.
 
 Flow:
 

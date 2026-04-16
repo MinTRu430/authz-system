@@ -101,6 +101,35 @@ func TestBrokerRuleDoesNotMatchDifferentMessageType(t *testing.T) {
 	}
 }
 
+func TestBrokerRuleDoesNotMatchDifferentBroker(t *testing.T) {
+	rules := NormalizePolicyRules([]PolicyRule{
+		{
+			ID:          "B1",
+			Source:      "orders",
+			Target:      "payments",
+			Transport:   TransportBroker,
+			Broker:      "kafka",
+			Operation:   "publish",
+			Resource:    "payments.events",
+			MessageType: "PaymentChargeRequested",
+			Effect:      "allow",
+		},
+	})
+
+	req := NewBrokerAuthzRequest(BrokerInteraction{
+		SourceService: "orders",
+		TargetService: "payments",
+		Broker:        "nats",
+		Resource:      "payments.events",
+		MessageType:   "PaymentChargeRequested",
+	}, BrokerOperationPublish)
+
+	resp := DecidePolicy(rules, "v1", req)
+	if resp.Allow {
+		t.Fatalf("allow = true, want default deny")
+	}
+}
+
 func TestDecisionCacheKeyIncludesBrokerAndMessageType(t *testing.T) {
 	cache := NewDecisionCache(time.Second)
 	charge := NewBrokerAuthzRequest(BrokerInteraction{
@@ -117,11 +146,21 @@ func TestDecisionCacheKeyIncludesBrokerAndMessageType(t *testing.T) {
 		Resource:      "payments.events",
 		MessageType:   "PaymentRefundRequested",
 	}, BrokerOperationPublish)
+	natsCharge := NewBrokerAuthzRequest(BrokerInteraction{
+		SourceService: "orders",
+		TargetService: "payments",
+		Broker:        "nats",
+		Resource:      "payments.events",
+		MessageType:   "PaymentChargeRequested",
+	}, BrokerOperationPublish)
 
 	cache.Put(charge, CheckResponse{Allow: true, RuleID: "B1"})
 
 	if _, ok := cache.Get(refund); ok {
 		t.Fatal("refund event unexpectedly hit charge event cache entry")
+	}
+	if _, ok := cache.Get(natsCharge); ok {
+		t.Fatal("NATS event unexpectedly hit Kafka cache entry")
 	}
 	if resp, ok := cache.Get(charge); !ok || !resp.Allow {
 		t.Fatalf("charge event cache entry missing: ok=%v resp=%+v", ok, resp)

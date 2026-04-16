@@ -1,33 +1,35 @@
-package authz
+package httpadapter
 
 import (
 	"errors"
 	"net/http"
 	"path"
 	"strings"
+
+	"authz-system/internal/authz"
 )
 
-func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
-	authorizer, err := NewAuthorizer(cfg)
+func NewMiddleware(cfg authz.Config) func(http.Handler) http.Handler {
+	authorizer, err := authz.NewAuthorizer(cfg)
 	if err != nil {
 		panic("authz: init http authorizer: " + err.Error())
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resource := NormalizeHTTPResource(r)
-			authReq := NewAuthzRequest("", cfg.TargetService, TransportHTTP, r.Method, resource)
+			resource := NormalizeResource(r)
+			authReq := authz.NewAuthzRequest("", cfg.TargetService, authz.TransportHTTP, r.Method, resource)
 
-			source, err := ExtractHTTPServiceIdentity(r)
+			source, err := ExtractServiceIdentity(r)
 			if err != nil {
-				recordAuthzCheck("unauthenticated", authReq)
+				authz.RecordAuthzCheck("unauthenticated", authReq)
 				http.Error(w, "mtls identity error: "+err.Error(), http.StatusUnauthorized)
 				return
 			}
 			authReq.Source = source
 
 			if _, err := authorizer.Authorize(r.Context(), authReq); err != nil {
-				if errors.Is(err, ErrDenied) || errors.Is(err, ErrFailClosed) {
+				if errors.Is(err, authz.ErrDenied) || errors.Is(err, authz.ErrFailClosed) {
 					http.Error(w, err.Error(), http.StatusForbidden)
 					return
 				}
@@ -40,7 +42,7 @@ func NewHTTPMiddleware(cfg Config) func(http.Handler) http.Handler {
 	}
 }
 
-func NormalizeHTTPResource(r *http.Request) string {
+func NormalizeResource(r *http.Request) string {
 	if r.Pattern != "" {
 		return normalizeHTTPPath(stripHTTPMethodFromPattern(r.Pattern))
 	}
@@ -48,6 +50,16 @@ func NormalizeHTTPResource(r *http.Request) string {
 		return "/"
 	}
 	return normalizeHTTPPath(r.URL.Path)
+}
+
+func ExtractServiceIdentity(r *http.Request) (string, error) {
+	if r.TLS == nil {
+		return "", errors.New("request is not TLS")
+	}
+	if len(r.TLS.PeerCertificates) == 0 {
+		return "", errors.New("no peer certificates")
+	}
+	return authz.ServiceIdentityFromCertificate(r.TLS.PeerCertificates[0])
 }
 
 func stripHTTPMethodFromPattern(pattern string) string {

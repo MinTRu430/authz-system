@@ -17,6 +17,8 @@ The system follows Zero Trust and default-deny principles: every protected inter
 High-level components:
 
 - `internal/authz` — framework core: request model, policy matching, decision cache, authorizer, metrics, fail-closed behavior.
+- `internal/authz/grpcadapter` — gRPC unary/stream interceptors over the core authorizer.
+- `internal/authz/httpadapter` — HTTP/REST middleware and route normalization over the core authorizer.
 - `internal/authz/kafkaadapter` — Kafka-specific publish/consume adapter over the generic broker layer.
 - `internal/authz/natsadapter` — NATS-specific publish/consume adapter over the generic broker layer.
 - `policy-server` — centralized service that loads YAML policies, exposes `/v1/check`, supports reload, audit and Prometheus metrics.
@@ -112,7 +114,30 @@ This is a demo transport contract. Production service identity for broker traffi
 - OpenSSL;
 - Go 1.24 for local builds and tests.
 
+## Reproducibility Notes
+
+The demo environment uses pinned infrastructure images:
+
+- `apache/kafka:4.2.0`;
+- `nats:2.10.29`;
+- `prom/prometheus:v2.55.0`;
+- `grafana/grafana:11.2.0`.
+
+Application Dockerfiles use `golang:1.24.11-alpine3.22` for builds and `alpine:3.22.2` for runtime images. Generated protobuf Go files are committed, so Docker builds do not install floating `protoc` generator versions.
+
+Generated certificates, audit data and experiment outputs are local runtime artifacts and are not committed. The policy-server audit file is stored in a Docker named volume and should be read through `make -C deploy audit`.
+
 ## Quick Start
+
+Minimal path from a fresh clone:
+
+```bash
+cd authz-system
+make -C deploy certs
+make -C deploy up
+make -C deploy test-all
+make -C deploy status
+```
 
 Generate local demo certificates once:
 
@@ -132,6 +157,7 @@ This starts:
 - `payments`;
 - `orders`;
 - Apache Kafka;
+- Kafka topic initialization for demo topics;
 - NATS;
 - Prometheus;
 - Grafana.
@@ -141,6 +167,8 @@ Check service URLs:
 ```bash
 make -C deploy status
 ```
+
+The Makefile resolves project paths from its own location, so the documented `make -C deploy ...` commands can be run from the repository root without extra environment variables.
 
 ## Basic Functional Checks
 
@@ -269,6 +297,8 @@ Generated artifacts are saved under:
 results/final/<timestamp>/functional/
 results/final/<timestamp>/bench/
 ```
+
+Additional load/degrade helper outputs are saved under `results/load/` and `results/degrade/` when those standalone scripts are used.
 
 Main artifacts:
 

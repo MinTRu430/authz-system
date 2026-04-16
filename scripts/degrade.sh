@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.yml")
 STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT="degrade_${STAMP}.log"
+RESULT_DIR="${RESULT_DIR:-$ROOT/results/degrade}"
+OUT="${OUT:-$RESULT_DIR/degrade_${STAMP}.log}"
+
+mkdir -p "$(dirname "$OUT")"
 
 echo "[*] Degradation test log -> $OUT"
 
@@ -16,7 +21,7 @@ echo "[*] Degradation test log -> $OUT"
   echo
 
   echo "=== 1) Stop policy-server ==="
-  docker compose -f deploy/docker-compose.yml stop policy-server
+  "${COMPOSE[@]}" stop policy-server
   sleep 1
   echo
 
@@ -25,7 +30,7 @@ echo "[*] Degradation test log -> $OUT"
   echo
 
   echo "=== 3) Start policy-server ==="
-  docker compose -f deploy/docker-compose.yml up -d policy-server
+  "${COMPOSE[@]}" up -d policy-server
   sleep 2
   echo
 

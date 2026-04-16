@@ -24,6 +24,8 @@ policy-data/*
 
 # Generated experiment artifacts
 results/final*/
+results/degrade*/
+results/load*/
 !results/README.md
 !results/summary.md
 

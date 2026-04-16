@@ -4,20 +4,23 @@ set -euo pipefail
 # Generates CSV for report:
 # mode, n, c, rps, p50_ms, p95_ms, p99_ms, avg_ms, ok, fail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-charge}"
 N="${2:-5000}"
 
-OUT="${OUT:-load_${MODE}_$(date +%Y%m%d_%H%M%S).csv}"
+RESULT_DIR="${RESULT_DIR:-$ROOT/results/load}"
+OUT="${OUT:-$RESULT_DIR/load_${MODE}_$(date +%Y%m%d_%H%M%S).csv}"
+mkdir -p "$(dirname "$OUT")"
 echo "mode,n,c,rps,p50_ms,p95_ms,p99_ms,avg_ms,ok,fail" > "$OUT"
 
 for C in 1 5 10 20 50 100; do
   echo "[*] mode=$MODE n=$N c=$C"
 
-  RES=$(go run ../cmd/loadtest \
+  RES=$(cd "$ROOT" && go run ./cmd/loadtest \
   -mode "$MODE" -n "$N" -c "$C" \
-  -ca ../certs/ca.pem \
-  -cert ../certs/orders.pem \
-  -key ../certs/orders-key.pem \
+  -ca certs/ca.pem \
+  -cert certs/orders.pem \
+  -key certs/orders-key.pem \
   -servername payments \
   -addr localhost:50051 \
   2>/dev/null | tee /dev/stderr)
@@ -37,10 +40,7 @@ for C in 1 5 10 20 50 100; do
     local v="$1"
     if [[ "$v" == *ms ]]; then echo "${v%ms}"
     elif [[ "$v" == *s ]]; then
-      python3 - <<PY
-v="${v%s}"
-print(int(float(v)*1000))
-PY
+      awk -v s="${v%s}" 'BEGIN { printf "%.0f\n", s * 1000 }'
     else echo ""
     fi
   }

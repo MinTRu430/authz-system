@@ -15,6 +15,8 @@ import (
 
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
+	"authz-system/internal/authz/grpcadapter"
+	"authz-system/internal/authz/httpadapter"
 	"authz-system/internal/authz/kafkaadapter"
 	"authz-system/internal/authz/natsadapter"
 
@@ -246,7 +248,7 @@ func main() {
 
 		srv := &http.Server{
 			Addr:      ":8080",
-			Handler:   authz.NewHTTPMiddleware(cfg)(mux),
+			Handler:   httpadapter.NewMiddleware(cfg)(mux),
 			TLSConfig: mustServerTLSConfig(certFile, keyFile, caFile),
 		}
 		log.Println("payments REST listening on :8080 (mTLS + authz)")
@@ -255,8 +257,8 @@ func main() {
 
 	s := grpc.NewServer(
 		grpc.Creds(mustServerCreds(certFile, keyFile, caFile)),
-		grpc.UnaryInterceptor(authz.NewUnaryInterceptor(cfg)),
-		grpc.StreamInterceptor(authz.NewStreamInterceptor(cfg)),
+		grpc.UnaryInterceptor(grpcadapter.NewUnaryInterceptor(cfg)),
+		grpc.StreamInterceptor(grpcadapter.NewStreamInterceptor(cfg)),
 	)
 
 	paymentsv1.RegisterPaymentsServer(s, &paymentsServer{})
