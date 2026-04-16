@@ -1,10 +1,14 @@
 COMPOSE=docker compose -f docker-compose.yml
 
 
-.PHONY: certs up down build restart logs test test-rest test-kafka test-nats status audit reload bench final-functional final-bench final-suite degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
+.PHONY: certs up down build restart logs status audit reload \
+	test test-grpc test-rest test-kafka test-nats test-all \
+	bench load load-deny load-matrix final-functional final-bench final-suite final-demo \
+	degrade-down degrade-up degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test degrade-all \
+	chaos-reload chaos-policy-flap
 
 certs:
-	./certs/generate-certs.sh
+	../certs/generate-certs.sh
 
 up:
 	$(COMPOSE) up --build -d
@@ -29,6 +33,8 @@ test:
 	@echo "=== TEST deny: Refund ==="
 	- docker exec orders /app/orders refund
 
+test-grpc: test
+
 test-rest:
 	@echo "=== TEST REST allow: POST /payments/charge ==="
 	docker exec orders /app/orders rest-charge
@@ -39,10 +45,15 @@ test-rest:
 test-kafka:
 	@echo "=== TEST Kafka allow: orders publish payment.requested ==="
 	docker exec orders /app/orders kafka-publish
-	@sleep 3
 	@echo ""
 	@echo "=== TEST Kafka consume: payments processes payment.requested ==="
-	docker compose -f docker-compose.yml logs --tail=120 payments | grep "KAFKA CONSUME OK"
+	@deadline=$$(( $$(date +%s) + 60 )); \
+	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
+	  docker compose -f docker-compose.yml logs --since=60s payments | grep -q "KAFKA CONSUME OK" && exit 0; \
+	  sleep 2; \
+	done; \
+	docker compose -f docker-compose.yml logs --tail=200 payments; \
+	exit 1
 	@echo ""
 	@echo "=== TEST Kafka deny: forbidden forced refund publish ==="
 	- docker exec orders /app/orders kafka-publish-deny
@@ -50,13 +61,20 @@ test-kafka:
 test-nats:
 	@echo "=== TEST NATS allow: orders publish payment.requested ==="
 	docker exec orders /app/orders nats-publish
-	@sleep 2
 	@echo ""
 	@echo "=== TEST NATS consume: payments processes payment.requested ==="
-	docker compose -f docker-compose.yml logs --since=20s payments | grep "NATS CONSUME OK"
+	@deadline=$$(( $$(date +%s) + 20 )); \
+	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
+	  docker compose -f docker-compose.yml logs --since=20s payments | grep -q "NATS CONSUME OK" && exit 0; \
+	  sleep 2; \
+	done; \
+	docker compose -f docker-compose.yml logs --tail=200 payments; \
+	exit 1
 	@echo ""
 	@echo "=== TEST NATS deny: forbidden forced refund publish ==="
 	- docker exec orders /app/orders nats-publish-deny
+
+test-all: test-grpc test-rest test-kafka test-nats
 
 status:
 	@echo "Prometheus: http://localhost:9091"
@@ -95,6 +113,9 @@ final-suite:
 	../scripts/final-suite.sh
 
 
+final-demo: restart test-all status
+
+
 load:
 	go run ../cmd/loadtest \
 	  -mode charge -n 5000 -c 50 \
@@ -128,6 +149,14 @@ degrade-down:
 degrade-up:
 	@echo "=== Degradation: start policy-server ==="
 	docker compose -f docker-compose.yml up -d policy-server
+
+degrade-all: degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
+
+chaos-reload:
+	cd .. && ./scripts/reload-loop.sh 60 2
+
+chaos-policy-flap:
+	cd .. && ./scripts/policy-flap.sh 60 3 7
 
 degrade-test:
 	@echo "=== Degradation test (fail-closed) ==="

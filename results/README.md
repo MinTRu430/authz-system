@@ -15,3 +15,5 @@ Main files:
 - `payments_metrics_*.prom` and `policy_metrics_*.prom` for Prometheus snapshots;
 - `audit_*.log` for policy reload audit evidence;
 - `docker_*.log` for service logs and async consume evidence.
+
+The curated final summary is tracked in `results/summary.md`.

@@ -1,80 +1,63 @@
-# Централизованная межсервисная авторизация в микросервисной архитектуре (Go)
+# AuthZ System: Transport-Agnostic Inter-Service Authorization Framework
 
-## Аннотация
+`authz-system` is an experimental framework for centralized authorization of inter-service communication in microservice systems. It was developed as the engineering artifact for a master's research project.
 
-Проект представляет собой **экспериментальный прототип системы централизованной межсервисной авторизации** для микросервисной архитектуры, реализованный на языке Go.
+The framework provides one transport-agnostic authorization model and several transport adapters:
 
-Система предназначена для контроля доступа между сервисами на уровне **gRPC-, HTTP/REST-, Kafka- и NATS-взаимодействий** и реализует принципы **Zero Trust** и **default deny**.  
-Проект разработан в рамках производственной практики и используется как практическая часть магистерского исследования.
+- gRPC unary/stream interceptors;
+- HTTP/REST middleware;
+- generic broker authorization layer;
+- Kafka adapter;
+- NATS adapter.
 
----
+The system follows Zero Trust and default-deny principles: every protected interaction is normalized into a common authorization request, checked by a centralized `policy-server`, and denied when the policy-server is unavailable and `FailOpen=false`.
 
-## Ключевые особенности
+## Architecture
 
-- взаимная аутентификация сервисов на основе **mTLS**;
-- централизованное принятие решений об авторизации;
-- отсутствие необходимости в service mesh или sidecar-прокси;
-- динамическая перезагрузка политик доступа;
-- аудит изменений политик;
-- интеграция с Prometheus и Grafana;
-- экспериментальная оценка накладных расходов.
+High-level components:
 
----
+- `internal/authz` — framework core: request model, policy matching, decision cache, authorizer, metrics, fail-closed behavior.
+- `internal/authz/kafkaadapter` — Kafka-specific publish/consume adapter over the generic broker layer.
+- `internal/authz/natsadapter` — NATS-specific publish/consume adapter over the generic broker layer.
+- `policy-server` — centralized service that loads YAML policies, exposes `/v1/check`, supports reload, audit and Prometheus metrics.
+- `services/orders` — demo client service and CLI driver for gRPC, REST, Kafka and NATS calls.
+- `services/payments` — protected demo service exposing gRPC, REST, Kafka consumer and NATS subscriber paths.
+- `deploy` — Docker Compose environment with policy-server, demo services, Kafka, NATS, Prometheus and Grafana.
+- `scripts` — reproducible functional, degradation, chaos and benchmark scenarios.
+- `results` — generated experiment artifacts and final summaries.
 
-## Архитектура системы
+Core request shape:
 
-Система построена по принципу централизованной авторизации и включает следующие компоненты:
+```yaml
+source: orders
+target: payments
+transport: grpc | http | broker
+operation: <rpc method | HTTP method | publish | consume>
+resource: <rpc wildcard | normalized route | topic/subject>
+broker: <kafka | nats | *>
+message_type: <event type | *>
+```
 
-### Policy Server
-- хранение и применение политик доступа;
-- REST API для проверки прав доступа;
-- перезагрузка политик без перезапуска;
-- аудит административных действий;
-- экспорт метрик Prometheus.
+The gRPC legacy policy field `rpc` is still supported and is normalized to:
 
-### AuthZ Agent
-- библиотека, встраиваемая в микросервисы;
-- реализован в виде gRPC unary/stream interceptor’ов и HTTP middleware;
-- содержит общий broker abstraction layer, Kafka adapter и NATS adapter;
-- извлекает идентичность сервиса из mTLS-сертификата;
-- выполняет синхронную проверку прав перед gRPC, REST или broker publish/consume.
+```yaml
+transport: grpc
+operation: <rpc>
+resource: "*"
+```
 
-### Демонстрационные сервисы
-- **orders** — сервис-клиент, инициирующий межсервисные вызовы;
-- **payments** — защищённый сервис (методы `Charge` и `Refund`).
-- Kafka demo — `orders` публикует событие `payment.requested.v1`, `payments` читает и обрабатывает его после authz check.
-- NATS demo — тот же async-сценарий через NATS subject `payments.requested`.
+## Policy Model
 
-### Наблюдаемость
-- **Prometheus** — сбор метрик;
-- **Grafana** — визуализация;
-- **audit log** — контроль изменений политик.
+Policies are loaded from `policies/policies.yaml`.
 
----
-
-## Политики доступа
-
-Политики описываются в YAML-файле `policies/policies.yaml`.  
-Используется принцип **запрета по умолчанию (default deny)**.
-
-### Пример политик
+Example rules:
 
 ```yaml
 - id: R1
   source: orders
   target: payments
-  transport: grpc
-  operation: /payments.v1.Payments/Charge
-  resource: "*"
+  rpc: /payments.v1.Payments/Charge
   effect: allow
-
-- id: R2
-  source: "*"
-  target: payments
-  transport: grpc
-  operation: /payments.v1.Payments/Refund
-  resource: "*"
-  effect: deny
 
 - id: R_HTTP_1
   source: orders
@@ -84,15 +67,7 @@
   resource: /payments/charge
   effect: allow
 
-- id: R_HTTP_2
-  source: orders
-  target: payments
-  transport: http
-  operation: POST
-  resource: /payments/refund
-  effect: deny
-
-- id: R_BROKER_1
+- id: R_KAFKA_1
   source: orders
   target: payments
   transport: broker
@@ -101,26 +76,6 @@
   resource: payments.requested
   message_type: payment.requested.v1
   effect: allow
-
-- id: R_BROKER_2
-  source: orders
-  target: payments
-  transport: broker
-  broker: kafka
-  operation: consume
-  resource: payments.requested
-  message_type: payment.requested.v1
-  effect: allow
-
-- id: R_BROKER_3
-  source: orders
-  target: payments
-  transport: broker
-  broker: kafka
-  operation: publish
-  resource: payments.refund.forced
-  message_type: payment.refund.forced.v1
-  effect: deny
 
 - id: R_NATS_1
   source: orders
@@ -132,26 +87,6 @@
   message_type: payment.requested.v1
   effect: allow
 
-- id: R_NATS_2
-  source: orders
-  target: payments
-  transport: broker
-  broker: nats
-  operation: consume
-  resource: payments.requested
-  message_type: payment.requested.v1
-  effect: allow
-
-- id: R_NATS_3
-  source: orders
-  target: payments
-  transport: broker
-  broker: nats
-  operation: publish
-  resource: payments.refund.forced
-  message_type: payment.refund.forced.v1
-  effect: deny
-
 - id: R3
   source: "*"
   target: "*"
@@ -161,125 +96,101 @@
   effect: deny
 ```
 
-Поле `rpc` из ранней версии формата пока поддерживается как legacy-форма gRPC-правил и при загрузке нормализуется в `transport: grpc`, `operation: <rpc>`, `resource: "*"`. Для REST используется `transport: http`, `operation` содержит HTTP-метод, а `resource` содержит нормализованный путь без query-параметров. Для broker-сценариев `operation` принимает значения `publish` или `consume`, `resource` содержит topic/subject/queue, а `message_type` задаёт тип события.
+Matching is first-match, so the final wildcard deny rule implements default deny.
 
-Отдельный пример broker-only политик находится в `policies/policies_broker_example.yaml`.
+For broker demos, message metadata uses:
 
-### Kafka/NATS demo contract
+- `X-Service-Name` — source service identity for the demo message contract;
+- `X-Message-Type` — event type.
 
-Kafka и NATS adapters используют общий broker abstraction layer и не меняют core-логику авторизации. В demo-сценарии metadata сообщения передаётся через Kafka/NATS headers:
+This is a demo transport contract. Production service identity for broker traffic should be backed by broker authentication, mTLS/SASL, message signatures, or another cryptographically protected mechanism.
 
-- `X-Service-Name` — сервис-источник сообщения;
-- `X-Message-Type` — тип события.
-
-Это demo transport contract. Для production-сценариев service identity должна подтверждаться механизмами брокера, mTLS/SASL, подписью сообщения или другим криптографически защищённым способом.
-NATS demo использует обычный core NATS subject без persistence; команда `nats-publish-raw` предназначена только для проверки consume fail-closed и обходит publish authz на стороне demo producer.
-
-### Интерпретация политик доступа
-
-- сервис `orders` имеет право вызывать метод `Charge` сервиса `payments`;
-- вызов метода `Refund` запрещён для всех сервисов;
-- любые иные межсервисные вызовы запрещены по умолчанию в соответствии с принципом *default deny*.
-
----
-
-## Требования к окружению
-
-Для запуска и тестирования прототипа необходимы:
+## Requirements
 
 - Docker;
-- Docker Compose (v2);
+- Docker Compose v2;
 - OpenSSL;
-- Go версии **не ниже 1.22** (для локальной сборки и генерации артефактов).
+- Go 1.24 for local builds and tests.
 
----
+## Quick Start
 
-## Быстрый старт
-
-### Шаг 1. Генерация сертификатов (выполняется один раз)
+Generate local demo certificates once:
 
 ```bash
-chmod +x certs/generate-certs.sh
-./certs/generate-certs.sh
-```
-## Запуск и тестирование стенда
-
-### Шаг 1. Генерация сертификатов (выполняется один раз)
-
-```bash
-chmod +x certs/generate-certs.sh
-./certs/generate-certs.sh
+make -C deploy certs
 ```
 
-В результате выполнения данного шага будут сгенерированы:
-
-- Корневой центр сертификации (CA);
-- Клиентские сертификаты для сервисов:
-  - `orders`;
-  - `payments`;
-  - `policy-server`.
-
-Сертификаты используются для взаимной аутентификации сервисов и реализации межсервисной авторизации.
-
-### Шаг 2. Запуск стенда
+Start the full environment:
 
 ```bash
-make -C deploy restart
+make -C deploy up
 ```
 
-В ходе запуска будут подняты следующие контейнеры:
+This starts:
 
-- `policy-server` — сервис централизованной авторизации;
-- `kafka` — локальный Apache Kafka broker для async demo;
-- `nats` — локальный NATS broker для второго async demo;
-- `payments` — сервис платежей;
-- `orders` — сервис заказов;
-- `prometheus` — сбор метрик;
-- `grafana` — визуализация метрик.
+- `policy-server`;
+- `payments`;
+- `orders`;
+- Apache Kafka;
+- NATS;
+- Prometheus;
+- Grafana.
 
-Для проверки состояния контейнеров:
+Check service URLs:
 
 ```bash
-docker ps
+make -C deploy status
 ```
 
-### Шаг 3. Функциональное тестирование
+## Basic Functional Checks
+
+Run all transport demos:
 
 ```bash
-make -C deploy test
+make -C deploy test-all
+```
+
+Or run them separately:
+
+```bash
+make -C deploy test-grpc
 make -C deploy test-rest
 make -C deploy test-kafka
 make -C deploy test-nats
 ```
 
-**Ожидаемый результат:**
+Expected behavior:
 
-- Вызов метода `Charge` завершается успешно;
-- Вызов метода `Refund` завершается ошибкой `PermissionDenied`.
-- REST-вызов `POST /payments/charge` завершается успешно;
-- REST-вызов `POST /payments/refund` завершается ошибкой `403 Forbidden`.
-- Kafka publish `payment.requested.v1` завершается успешно;
-- Kafka consumer `payments` обрабатывает разрешённое сообщение;
-- Kafka publish `payment.refund.forced.v1` блокируется политикой.
-- NATS publish `payment.requested.v1` завершается успешно;
-- NATS subscriber `payments` обрабатывает разрешённое сообщение;
-- NATS publish `payment.refund.forced.v1` блокируется политикой.
+- gRPC `Charge` is allowed;
+- gRPC `Refund` is denied;
+- REST `POST /payments/charge` is allowed;
+- REST `POST /payments/refund` is denied;
+- Kafka publish and consume of `payment.requested.v1` are allowed;
+- Kafka forbidden publish `payment.refund.forced.v1` is denied;
+- NATS publish and consume of `payment.requested.v1` are allowed;
+- NATS forbidden publish `payment.refund.forced.v1` is denied.
 
-Полученный результат подтверждает корректную работу механизма централизованной межсервисной авторизации и применение политик доступа.
+## Reload, Audit and Fail-Closed
 
----
-
-## Администрирование
-
-### Перезагрузка политик доступа
-
-Для применения изменений в политиках без перезапуска сервисов:
+Reload policies without restarting services:
 
 ```bash
 make -C deploy reload
 ```
 
-### Проверка fail-closed
+View audit log:
+
+```bash
+make -C deploy audit
+```
+
+Run fail-closed degradation checks:
+
+```bash
+make -C deploy degrade-all
+```
+
+Individual degradation targets:
 
 ```bash
 make -C deploy degrade-test
@@ -290,103 +201,148 @@ make -C deploy degrade-nats-test
 make -C deploy degrade-nats-consume-test
 ```
 
-### Финальные сравнительные эксперименты
+These tests stop `policy-server` and verify that allowed interactions are blocked while the policy-server is unavailable.
 
-Единый набор финальных сценариев сохраняет артефакты в `results/final/<timestamp>/`:
+## Chaos and Load Scenarios
+
+Reload loop:
+
+```bash
+make -C deploy chaos-reload
+```
+
+Policy-server flap:
+
+```bash
+make -C deploy chaos-policy-flap
+```
+
+gRPC load test:
+
+```bash
+make -C deploy load
+make -C deploy load-deny
+make -C deploy load-matrix
+```
+
+Legacy `docker exec` benchmark:
+
+```bash
+make -C deploy bench
+```
+
+## Final Reproducible Experiments
+
+Functional matrix for gRPC, REST, Kafka and NATS:
 
 ```bash
 make -C deploy final-functional
+```
+
+Comparative latency/throughput benchmark:
+
+```bash
 make -C deploy final-bench
 ```
 
-Полный прогон функциональных, reload/degrade и benchmark-сценариев:
+Full final suite:
 
 ```bash
 make -C deploy final-suite
 ```
 
-Для короткого benchmark-прогона можно уменьшить объём:
+Short benchmark smoke:
 
 ```bash
 FINAL_N=100 FINAL_C=10 FINAL_WARMUP=10 make -C deploy final-bench
 ```
 
-Финальные скрипты сохраняют:
-
-- `summary.csv` — allow/deny/reload/degrade по каждому транспорту;
-- `bench_summary.csv` — latency/throughput по `grpc`, `rest`, `kafka`, `nats`;
-- `payments_metrics_*.prom` и `policy_metrics_*.prom` — снимки Prometheus-метрик;
-- `audit_*.log` — audit tail после reload-сценариев;
-- `docker_*.log` — логи сервисов для подтверждения consume/fail-closed.
-
-### Просмотр журнала аудита
-```bash
-make -C deploy audit
-```
-
-Журнал аудита фиксирует:
-
-- Время изменения конфигурации;
-- Инициатора изменения;
-- Предыдущую и текущую версии политик доступа.
-
----
-
-## Метрики и мониторинг
-
-### Prometheus
-
-URL: http://localhost:9091
-
-Основные метрики:
-
-- `policy_decisions_total` — количество принятых решений по политикам;
-- `authz_checks_total` — количество проверок авторизации с метками `result`, `transport` и `broker`;
-- `authz_cache_total` — cache hit/miss с метками `transport` и `broker`;
-- `authz_policy_check_latency_seconds` — задержка проверки политик с метками `transport` и `broker`;
-- `authz_fail_closed_total` — количество блокировок в режиме fail-closed.
-
-### Grafana
-
-URL: http://localhost:3000
-
-Логин / пароль: `admin` / `admin`
-
----
-
-## Нагрузочное тестирование
-
-Для оценки накладных расходов централизованной межсервисной авторизации реализован бенчмарк, измеряющий end-to-end задержку межсервисных вызовов.
-
-### Запуск бенчмарка
-
-Прямой запуск:
+Larger dissertation-oriented benchmark:
 
 ```bash
-./scripts/bench.sh charge 500
-./scripts/bench.sh refund 500
+FINAL_N=1000 FINAL_C=50 FINAL_WARMUP=100 make -C deploy final-bench
 ```
 
-Или с использованием Makefile:
+Generated artifacts are saved under:
 
-```bash
-make -C deploy bench
+```text
+results/final/<timestamp>/functional/
+results/final/<timestamp>/bench/
 ```
-### Результаты эксперимента
 
-По результатам нагрузочного тестирования установлено, что:
+Main artifacts:
 
-- Медианная задержка (p50) составляет порядка 110–115 мс;
-- Значение p95 не превышает 150 мс;
-- Накладные расходы являются стабильными и предсказуемыми;
-- Различия между сценариями allow и deny минимальны.
+- `summary.csv` — functional allow/deny/reload/degrade matrix;
+- `bench_summary.csv` — latency and throughput per transport;
+- `payments_metrics_*.prom` — authz metrics snapshots;
+- `policy_metrics_*.prom` — policy-server metrics snapshots;
+- `audit_*.log` — policy reload audit evidence;
+- `docker_*.log` — service logs for async consume and fail-closed evidence.
 
-В условиях production-среды (без использования `docker exec`) ожидается существенно меньшая задержка.
+## Metrics
 
----
+Prometheus:
 
-## Безопасность
+```text
+http://localhost:9091
+```
 
-- Приватные ключи и сертификаты не хранятся в репозитории;
-- Все секреты генерируются локально при запуске стенда;
-- Административный токен используется исключительно в демонстрационных целях.
+Payments metrics:
+
+```text
+http://localhost:9090/metrics
+```
+
+Key metrics:
+
+- `authz_checks_total{result,transport,broker}` — authorization decisions at framework edge;
+- `authz_cache_total{type,transport,broker}` — decision cache hit/miss;
+- `authz_policy_check_latency_seconds{transport,broker}` — policy check latency;
+- `authz_fail_closed_total` — fail-closed denials;
+- `policy_decisions_total{result}` — policy-server decisions.
+
+Grafana:
+
+```text
+http://localhost:3000
+```
+
+Default demo credentials:
+
+```text
+admin / admin
+```
+
+## Confirmed Properties
+
+- centralized policy decisions through `policy-server`;
+- transport-agnostic authorization request model;
+- support for synchronous transports: gRPC and REST;
+- support for asynchronous broker transports: Kafka and NATS;
+- extensible broker adapter boundary;
+- dynamic YAML policy reload without service restart;
+- audit trail for administrative reload operations;
+- decision cache with transport/broker-aware keys;
+- fail-closed behavior when `policy-server` is unavailable;
+- Prometheus metrics for decisions, cache, latency and fail-closed denials.
+
+## Research Notes
+
+Architecture summary for dissertation/presentation:
+
+```text
+docs/architecture-summary.md
+```
+
+Experiment summary:
+
+```text
+results/summary.md
+```
+
+## Security Notes
+
+- Demo certificates are generated locally and ignored by git.
+- Administrative token is demo-only.
+- REST and gRPC demo identity use mTLS.
+- Broker demo identity uses message headers for reproducibility; production deployments must bind message identity to broker-level or cryptographic authentication.

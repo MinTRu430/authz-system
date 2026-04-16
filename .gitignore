@@ -25,6 +25,7 @@ policy-data/*
 # Generated experiment artifacts
 results/final*/
 !results/README.md
+!results/summary.md
 
 # IDE
 .vscode/
