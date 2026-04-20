@@ -1,34 +1,34 @@
-# Final Experiment Summary
+# Итоговая сводка экспериментов
 
-This summary consolidates the confirmed behavior of the final `authz-system` framework version.
+Эта сводка объединяет подтвержденное поведение финальной версии framework `authz-system`.
 
-## Scope
+## Область проверки
 
-Evaluated transports:
+Оценивались транспорты:
 
 - gRPC;
 - HTTP/REST;
 - Kafka;
 - NATS.
 
-Evaluated properties:
+Оценивались свойства:
 
-- allow/deny correctness;
+- корректность allow/deny;
 - dynamic policy reload;
-- fail-closed behavior under policy-server degradation;
-- decision cache behavior;
-- metrics and audit evidence;
-- comparative latency/throughput smoke benchmarks.
+- fail-closed behavior при деградации policy-server;
+- поведение decision cache;
+- metrics и audit evidence;
+- сравнительные latency/throughput smoke benchmarks.
 
-## Functional Results
+## Функциональные результаты
 
-The final functional matrix is automated by:
+Финальная функциональная матрица автоматизирована командой:
 
 ```bash
 make -C deploy final-functional
 ```
 
-Confirmed checks:
+Подтвержденные проверки:
 
 | Transport | Allow | Deny | Reload Impact | Fail-Closed |
 |---|---:|---:|---:|---:|
@@ -39,23 +39,23 @@ Confirmed checks:
 | NATS publish | yes | yes | yes | yes |
 | NATS consume | yes | n/a | covered by policy model | yes |
 
-Latest verified functional artifact:
+Последний проверенный functional artifact:
 
 ```text
 results/final_smoke4/functional/summary.csv
 ```
 
-All rows in that smoke run passed.
+Все строки в этом smoke run прошли успешно.
 
-## Benchmark Smoke Results
+## Результаты benchmark smoke
 
-The final benchmark matrix is automated by:
+Финальная benchmark matrix автоматизирована командой:
 
 ```bash
 make -C deploy final-bench
 ```
 
-Latest short smoke configuration:
+Последняя short smoke configuration:
 
 ```text
 FINAL_N=20
@@ -63,13 +63,13 @@ FINAL_C=5
 FINAL_WARMUP=5
 ```
 
-Latest short smoke artifact:
+Последний short smoke artifact:
 
 ```text
 results/final_smoke5/bench/bench_summary.csv
 ```
 
-Observed short-run results:
+Наблюдаемые short-run results:
 
 | Transport | Scenario | p95 ms | Notes |
 |---|---|---:|---|
@@ -82,15 +82,15 @@ Observed short-run results:
 | NATS | publish allow | 1.024 | publish authz plus broker publish |
 | NATS | publish deny | 0.036 | denied before broker publish |
 
-These numbers are smoke-check values, not final statistical claims. Dissertation-oriented runs should use larger settings, for example:
+Эти numbers являются smoke-check values, а не финальными статистическими claims. Для диссертационных прогонов следует использовать larger settings, например:
 
 ```bash
 FINAL_N=1000 FINAL_C=50 FINAL_WARMUP=100 make -C deploy final-bench
 ```
 
-## Metrics Evidence
+## Подтверждение метриками
 
-The final benchmark smoke produced metrics with transport and broker labels:
+Финальный benchmark smoke сформировал metrics с labels `transport` и `broker`:
 
 ```text
 authz_cache_total{broker="kafka",transport="broker",type="hit"} ...
@@ -99,7 +99,7 @@ authz_checks_total{broker="none",transport="grpc",result="allow"} ...
 authz_checks_total{broker="none",transport="http",result="deny"} ...
 ```
 
-Async consume evidence from the same smoke run:
+Async consume evidence из того же smoke run:
 
 ```text
 kafka_consume_ok,25
@@ -108,27 +108,27 @@ nats_consume_ok,25
 
 ## Reload
 
-Reload was verified for:
+Reload был проверен для:
 
 - gRPC allow rule `R1`;
 - REST allow rule `R_HTTP_1`;
 - Kafka publish allow rule `R_KAFKA_1`;
 - NATS publish allow rule `R_NATS_1`.
 
-Method:
+Метод:
 
-1. Temporarily change allow rule effect to `deny`.
-2. Call policy reload.
-3. Verify previously allowed operation is denied.
-4. Restore allow rule.
-5. Call policy reload.
-6. Verify operation succeeds again.
+1. Временно изменить effect разрешающего rule на `deny`.
+2. Выполнить policy reload.
+3. Проверить, что ранее разрешенная operation теперь запрещена.
+4. Восстановить allow rule.
+5. Выполнить policy reload.
+6. Проверить, что operation снова успешна.
 
-Important deployment note: Docker Compose mounts the whole `policies` directory, not a single file, so policy reload observes file updates reliably.
+Важная deployment note: Docker Compose монтирует весь directory `policies`, а не одиночный файл, поэтому policy reload надежно видит file updates.
 
 ## Fail-Closed
 
-Fail-closed was verified for:
+Fail-closed был проверен для:
 
 - gRPC request path;
 - REST request path;
@@ -137,19 +137,19 @@ Fail-closed was verified for:
 - NATS publisher;
 - NATS subscriber processing.
 
-Expected behavior:
+Ожидаемое поведение:
 
-- when `policy-server` is unavailable and `FailOpen=false`, the protected operation is blocked;
-- `authz_fail_closed_total` increases;
-- cached allow decisions do not bypass policy-server unavailability.
+- когда `policy-server` недоступен и `FailOpen=false`, protected operation блокируется;
+- `authz_fail_closed_total` увеличивается;
+- cached allow decisions не обходят недоступность policy-server.
 
-## Stress and Chaos Notes
+## Заметки по stress и chaos
 
-Previously confirmed stress scenarios:
+Ранее подтвержденные stress scenarios:
 
-- baseline and concurrency matrix;
+- baseline и concurrency matrix;
 - 10k policy rules;
-- stress runs with 50k and 200k requests;
+- stress runs с 50k и 200k requests;
 - reload under load;
 - policy-server flap;
 - degrade tests.
@@ -161,39 +161,39 @@ Representative confirmed result:
 avg ~8.5 ms, p95 ~14 ms, p99 ~18 ms
 ```
 
-Long stress runs showed increasing tail latency. This is interpreted as an operational limitation under sustained load, not a safety violation: authorization remains fail-closed.
+Длинные stress runs показали рост tail latency. Это интерпретируется как operational limitation при sustained load, а не как safety violation: authorization остается fail-closed.
 
-## Interpretation
+## Интерпретация
 
 Sync vs async:
 
-- gRPC and REST protect direct request/response paths.
-- Kafka and NATS protect publish and consume boundaries.
-- Broker deny paths are cheap because denied messages are rejected before broker write.
+- gRPC и REST защищают direct request/response paths.
+- Kafka и NATS защищают publish и consume boundaries.
+- Broker deny paths дешевле, потому что denied messages отклоняются до broker write.
 
 Kafka vs NATS:
 
-- Both use the same broker abstraction and policy model.
-- Kafka demonstrates durable topic-based async flow.
-- NATS demonstrates a lightweight subject-based async flow.
-- Adding NATS did not require changes to the authorization core.
+- оба используют одну broker abstraction и policy model;
+- Kafka демонстрирует durable topic-based async flow;
+- NATS демонстрирует lightweight subject-based async flow;
+- добавление NATS не потребовало изменений в authorization core.
 
 Cache:
 
-- cache hit/miss metrics confirm that repeated checks avoid repeated policy decisions;
-- cache keys include transport, broker and message type;
-- fail-closed safety takes precedence over cached allow decisions.
+- cache hit/miss metrics подтверждают, что repeated checks избегают repeated policy decisions;
+- cache keys включают transport, broker и message type;
+- fail-closed safety имеет приоритет над cached allow decisions.
 
 Transport-agnostic architecture:
 
-- all transports converge into the same `AuthzRequest`;
-- policy-server does not know transport implementation details;
-- adding a second broker adapter validated extensibility.
+- все transports сходятся в один `AuthzRequest`;
+- policy-server не знает implementation details transports;
+- добавление второго broker adapter подтвердило extensibility.
 
-## Recommended Next Optimizations
+## Рекомендации по дальнейшей оптимизации
 
-- Add a persistent NATS JetStream scenario for durable consume experiments.
-- Add broker-authenticated identities instead of demo message headers.
-- Add matrix benchmarks for REST and broker paths similar to the existing gRPC load matrix.
-- Add dashboards broken down by `transport` and `broker`.
-- Add CI smoke checks for `go test`, compose config, and final functional smoke.
+- Добавить persistent NATS JetStream scenario для durable consume experiments.
+- Добавить broker-authenticated identities вместо demo message headers.
+- Добавить matrix benchmarks для REST и broker paths по аналогии с существующей gRPC load matrix.
+- Добавить dashboards с разбиением по `transport` и `broker`.
+- Добавить CI smoke checks для `go test`, compose config и final functional smoke.

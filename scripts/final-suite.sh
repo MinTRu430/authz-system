@@ -7,23 +7,23 @@ RESULT_ROOT="${RESULT_ROOT:-$ROOT/results/final/$STAMP}"
 
 mkdir -p "$RESULT_ROOT"
 
-echo "[*] final suite result root -> $RESULT_ROOT"
+echo "[*] Корневой каталог результатов final suite -> $RESULT_ROOT"
 
 RESULT_DIR="$RESULT_ROOT/functional" STAMP="$STAMP" "$ROOT/scripts/final-functional.sh"
 RESULT_DIR="$RESULT_ROOT/bench" STAMP="$STAMP" "$ROOT/scripts/final-bench.sh"
 
 {
-  echo "Final suite timestamp: $STAMP"
+  echo "Timestamp final suite: $STAMP"
   echo
-  echo "Functional summary:"
+  echo "Функциональная сводка:"
   echo "$RESULT_ROOT/functional/summary.csv"
   echo
-  echo "Benchmark summary:"
+  echo "Сводка benchmark:"
   echo "$RESULT_ROOT/bench/bench_summary.csv"
   echo
-  echo "Key artifacts:"
+  echo "Ключевые artifacts:"
   find "$RESULT_ROOT" -maxdepth 2 -type f | sort
 } > "$RESULT_ROOT/README.txt"
 
-echo "[+] final suite complete"
-echo "[+] see $RESULT_ROOT/README.txt"
+echo "[+] final suite завершен"
+echo "[+] см. $RESULT_ROOT/README.txt"

@@ -104,7 +104,7 @@ YAML
 
 # 2) Добавляем лишние правила (не матчатся под реальные вызовы),
 # чтобы нагрузить обработку политик (поиск/сопоставление/объём).
-# IMPORTANT: финальный deny-all мы добавим последним.
+# Важно: финальный deny-all добавляется последним.
 for i in $(seq 12 "$N"); do
 cat >> "$OUT" <<YAML
 - id: R$i
@@ -131,4 +131,4 @@ cat >> "$OUT" <<YAML
   effect: deny
 YAML
 
-echo "[+] Generated $OUT with $N transport-aware rules (grpc/rest/kafka/nats basics + fillers + R11 deny-all at end)"
+echo "[+] Сгенерирован $OUT с $N transport-aware rules (grpc/rest/kafka/nats basics + filler rules + R11 deny-all в конце)"

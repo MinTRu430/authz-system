@@ -29,26 +29,26 @@ logs:
 	$(COMPOSE) logs -f
 
 test:
-	@echo "=== TEST allow: Charge ==="
+	@echo "=== ТЕСТ allow: Charge ==="
 	docker exec orders /app/orders charge
 	@echo ""
-	@echo "=== TEST deny: Refund ==="
+	@echo "=== ТЕСТ deny: Refund ==="
 	- docker exec orders /app/orders refund
 
 test-grpc: test
 
 test-rest:
-	@echo "=== TEST REST allow: POST /payments/charge ==="
+	@echo "=== ТЕСТ REST allow: POST /payments/charge ==="
 	docker exec orders /app/orders rest-charge
 	@echo ""
-	@echo "=== TEST REST deny: POST /payments/refund ==="
+	@echo "=== ТЕСТ REST deny: POST /payments/refund ==="
 	- docker exec orders /app/orders rest-refund
 
 test-kafka:
-	@echo "=== TEST Kafka allow: orders publish payment.requested ==="
+	@echo "=== ТЕСТ Kafka allow: orders publish payment.requested ==="
 	docker exec orders /app/orders kafka-publish
 	@echo ""
-	@echo "=== TEST Kafka consume: payments processes payment.requested ==="
+	@echo "=== ТЕСТ Kafka consume: payments processes payment.requested ==="
 	@deadline=$$(( $$(date +%s) + 60 )); \
 	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
 	  $(COMPOSE) logs --since=60s payments | grep -q "KAFKA CONSUME OK" && exit 0; \
@@ -57,14 +57,14 @@ test-kafka:
 	$(COMPOSE) logs --tail=200 payments; \
 	exit 1
 	@echo ""
-	@echo "=== TEST Kafka deny: forbidden forced refund publish ==="
+	@echo "=== ТЕСТ Kafka deny: forbidden forced refund publish ==="
 	- docker exec orders /app/orders kafka-publish-deny
 
 test-nats:
-	@echo "=== TEST NATS allow: orders publish payment.requested ==="
+	@echo "=== ТЕСТ NATS allow: orders publish payment.requested ==="
 	docker exec orders /app/orders nats-publish
 	@echo ""
-	@echo "=== TEST NATS consume: payments processes payment.requested ==="
+	@echo "=== ТЕСТ NATS consume: payments processes payment.requested ==="
 	@deadline=$$(( $$(date +%s) + 20 )); \
 	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
 	  $(COMPOSE) logs --since=20s payments | grep -q "NATS CONSUME OK" && exit 0; \
@@ -73,7 +73,7 @@ test-nats:
 	$(COMPOSE) logs --tail=200 payments; \
 	exit 1
 	@echo ""
-	@echo "=== TEST NATS deny: forbidden forced refund publish ==="
+	@echo "=== ТЕСТ NATS deny: forbidden forced refund publish ==="
 	- docker exec orders /app/orders nats-publish-deny
 
 test-all: test-grpc test-rest test-kafka test-nats
@@ -88,7 +88,7 @@ status:
 	@echo "NATS:             nats://nats:4222 inside docker network, monitoring http://localhost:8222"
 
 reload:
-	@echo "=== Reload policies (admin, mTLS) ==="
+	@echo "=== Перезагрузка policies (admin, mTLS) ==="
 	curl -k -X POST https://localhost:8443/v1/policies/reload \
 	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
@@ -145,11 +145,11 @@ load-matrix:
 
 
 degrade-down:
-	@echo "=== Degradation: stop policy-server ==="
+	@echo "=== Degradation: остановка policy-server ==="
 	$(COMPOSE) stop policy-server
 
 degrade-up:
-	@echo "=== Degradation: start policy-server ==="
+	@echo "=== Degradation: запуск policy-server ==="
 	$(COMPOSE) up -d policy-server
 
 degrade-all: degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
@@ -162,119 +162,119 @@ chaos-policy-flap:
 
 degrade-test:
 	@echo "=== Degradation test (fail-closed) ==="
-	@echo "[1] Baseline check: policy-server up -> Charge should succeed"
+	@echo "[1] Базовая проверка: policy-server доступен -> Charge должен пройти"
 	docker exec orders /app/orders charge
 	@echo
-	@echo "[2] Stop policy-server -> Charge should be denied (fail-closed)"
+	@echo "[2] Остановить policy-server -> Charge должен быть запрещен (fail-closed)"
 	$(COMPOSE) stop policy-server
 	@sleep 1
-	@echo "Calling charge while policy-server is DOWN..."
-	@docker exec orders /app/orders charge && (echo "UNEXPECTED: charge succeeded" && exit 1) || echo "OK: denied as expected"
+	@echo "Вызов charge при недоступном policy-server..."
+	@docker exec orders /app/orders charge && (echo "НЕОЖИДАННО: charge прошел" && exit 1) || echo "OK: запрос запрещен, как ожидалось"
 	@echo
-	@echo "[3] Start policy-server -> Charge should succeed again"
+	@echo "[3] Запустить policy-server -> Charge снова должен пройти"
 	$(COMPOSE) up -d policy-server
 	@sleep 1
 	docker exec orders /app/orders charge
 	@echo
-	@echo "[+] Degradation test finished"
+	@echo "[+] Degradation test завершен"
 
 
 degrade-rest-test:
 	@echo "=== REST degradation test (fail-closed) ==="
-	@echo "[1] Baseline check: policy-server up -> REST charge should succeed"
+	@echo "[1] Базовая проверка: policy-server доступен -> REST charge должен пройти"
 	docker exec orders /app/orders rest-charge
 	@echo
-	@echo "[2] Stop policy-server -> REST charge should be denied (fail-closed)"
+	@echo "[2] Остановить policy-server -> REST charge должен быть запрещен (fail-closed)"
 	$(COMPOSE) stop policy-server
 	@sleep 1
-	@echo "Calling REST charge while policy-server is DOWN..."
-	@docker exec orders /app/orders rest-charge && (echo "UNEXPECTED: REST charge succeeded" && exit 1) || echo "OK: denied as expected"
+	@echo "Вызов REST charge при недоступном policy-server..."
+	@docker exec orders /app/orders rest-charge && (echo "НЕОЖИДАННО: REST charge прошел" && exit 1) || echo "OK: запрос запрещен, как ожидалось"
 	@echo
-	@echo "[3] Start policy-server -> REST charge should succeed again"
+	@echo "[3] Запустить policy-server -> REST charge снова должен пройти"
 	$(COMPOSE) up -d policy-server
 	@sleep 1
 	docker exec orders /app/orders rest-charge
 	@echo
-	@echo "[+] REST degradation test finished"
+	@echo "[+] REST degradation test завершен"
 
 
 degrade-kafka-test:
 	@echo "=== Kafka publish degradation test (fail-closed) ==="
-	@echo "[1] Baseline check: policy-server up -> Kafka publish should succeed"
+	@echo "[1] Базовая проверка: policy-server доступен -> Kafka publish должен пройти"
 	docker exec orders /app/orders kafka-publish
 	@echo
-	@echo "[2] Stop policy-server -> Kafka publish should be denied (fail-closed)"
+	@echo "[2] Остановить policy-server -> Kafka publish должен быть запрещен (fail-closed)"
 	$(COMPOSE) stop policy-server
 	@sleep 1
-	@docker exec orders /app/orders kafka-publish && (echo "UNEXPECTED: Kafka publish succeeded" && exit 1) || echo "OK: denied as expected"
+	@docker exec orders /app/orders kafka-publish && (echo "НЕОЖИДАННО: Kafka publish прошел" && exit 1) || echo "OK: запрос запрещен, как ожидалось"
 	@echo
-	@echo "[3] Start policy-server -> Kafka publish should succeed again"
+	@echo "[3] Запустить policy-server -> Kafka publish снова должен пройти"
 	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@echo
-	@echo "[+] Kafka publish degradation test finished"
+	@echo "[+] Kafka publish degradation test завершен"
 
 
 degrade-kafka-consume-test:
 	@echo "=== Kafka consume degradation test (fail-closed) ==="
-	@echo "[1] Stop payments consumer and inject an authorized-format message directly into Kafka"
+	@echo "[1] Остановить payments consumer и записать authorized-format message напрямую в Kafka"
 	$(COMPOSE) stop payments
 	docker exec orders /app/orders kafka-publish-raw
 	@echo
-	@echo "[2] Stop policy-server and start payments -> consume should be denied before processing"
+	@echo "[2] Остановить policy-server и запустить payments -> consume должен быть запрещен до обработки"
 	$(COMPOSE) stop policy-server
 	docker start payments
 	@sleep 35
-	@$(COMPOSE) logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: Kafka consume deny log" && exit 1)
+	@$(COMPOSE) logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "OK: consume запрещен, как ожидалось" || (echo "НЕ НАЙДЕН: Kafka consume deny log" && exit 1)
 	@echo
-	@echo "[3] Restore policy-server and verify Kafka publish/consume recovers"
+	@echo "[3] Восстановить policy-server и проверить восстановление Kafka publish/consume"
 	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@sleep 10
 	$(COMPOSE) logs --since=20s payments | grep "KAFKA CONSUME OK"
 	@echo
-	@echo "[+] Kafka consume degradation test finished"
+	@echo "[+] Kafka consume degradation test завершен"
 
 
 degrade-nats-test:
 	@echo "=== NATS publish degradation test (fail-closed) ==="
-	@echo "[1] Baseline check: policy-server up -> NATS publish should succeed"
+	@echo "[1] Базовая проверка: policy-server доступен -> NATS publish должен пройти"
 	docker exec orders /app/orders nats-publish
 	@echo
-	@echo "[2] Stop policy-server -> NATS publish should be denied (fail-closed)"
+	@echo "[2] Остановить policy-server -> NATS publish должен быть запрещен (fail-closed)"
 	$(COMPOSE) stop policy-server
 	@sleep 1
-	@docker exec orders /app/orders nats-publish && (echo "UNEXPECTED: NATS publish succeeded" && exit 1) || echo "OK: denied as expected"
+	@docker exec orders /app/orders nats-publish && (echo "НЕОЖИДАННО: NATS publish прошел" && exit 1) || echo "OK: запрос запрещен, как ожидалось"
 	@echo
-	@echo "[3] Start policy-server -> NATS publish should succeed again"
+	@echo "[3] Запустить policy-server -> NATS publish снова должен пройти"
 	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@echo
-	@echo "[+] NATS publish degradation test finished"
+	@echo "[+] NATS publish degradation test завершен"
 
 
 degrade-nats-consume-test:
 	@echo "=== NATS consume degradation test (fail-closed) ==="
-	@echo "[1] Baseline check: policy-server up -> NATS consume should succeed"
+	@echo "[1] Базовая проверка: policy-server доступен -> NATS consume должен пройти"
 	docker exec orders /app/orders nats-publish
 	@sleep 2
 	$(COMPOSE) logs --since=20s payments | grep "NATS CONSUME OK"
 	@echo
-	@echo "[2] Stop policy-server and inject an authorized-format message directly into NATS"
+	@echo "[2] Остановить policy-server и отправить authorized-format message напрямую в NATS"
 	$(COMPOSE) stop policy-server
 	@sleep 1
 	docker exec orders /app/orders nats-publish-raw
 	@sleep 3
-	@$(COMPOSE) logs --since=15s payments | grep "NATS CONSUME DENY" && echo "OK: consume denied as expected" || (echo "MISSING: NATS consume deny log" && exit 1)
+	@$(COMPOSE) logs --since=15s payments | grep "NATS CONSUME DENY" && echo "OK: consume запрещен, как ожидалось" || (echo "НЕ НАЙДЕН: NATS consume deny log" && exit 1)
 	@echo
-	@echo "[3] Restore policy-server and verify NATS publish/consume recovers"
+	@echo "[3] Восстановить policy-server и проверить восстановление NATS publish/consume"
 	$(COMPOSE) up -d policy-server
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@sleep 3
 	$(COMPOSE) logs --since=20s payments | grep "NATS CONSUME OK"
 	@echo
-	@echo "[+] NATS consume degradation test finished"
+	@echo "[+] NATS consume degradation test завершен"

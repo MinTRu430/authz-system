@@ -43,15 +43,15 @@ run_bench() {
 
   cat "$log_file" | tee -a "$MAIN_LOG"
   if [[ "$rc" -ne 0 ]]; then
-    log "FAILED: bench ${transport}/${scenario}"
+    log "ОШИБКА: bench ${transport}/${scenario}"
     return "$rc"
   fi
 
   awk -F'CSV: ' '/^CSV: / && $2 !~ /^transport,/ { line=$2 } END { if (line != "") print line }' "$log_file" >> "$SUMMARY"
 }
 
-log "[*] final benchmark results -> $RESULT_DIR"
-log "[*] starting demo stack"
+log "[*] Результаты final benchmark -> $RESULT_DIR"
+log "[*] Запуск demo stack"
 "${COMPOSE[@]}" up --build -d | tee -a "$MAIN_LOG"
 sleep "${STACK_SETTLE_SECONDS:-5}"
 
@@ -73,13 +73,13 @@ snapshot_metrics "after"
 make -C "$ROOT/deploy" audit > "$RESULT_DIR/audit_after.log" 2>&1 || true
 
 {
-  echo "=== benchmark summary ==="
+  echo "=== сводка benchmark ==="
   cat "$SUMMARY"
   echo
-  echo "=== payments authz metrics after benchmark ==="
+  echo "=== authz metrics payments после benchmark ==="
   grep -E 'authz_(checks_total|cache_total|fail_closed_total|policy_check_latency_seconds_(count|sum))' "$RESULT_DIR/payments_metrics_after.prom" || true
   echo
-  echo "=== async consume log counts ==="
+  echo "=== счетчики async consume в logs ==="
   printf "kafka_consume_ok,"
   grep -c 'KAFKA CONSUME OK' "$RESULT_DIR/docker_after.log" || true
   printf "nats_consume_ok,"
@@ -87,6 +87,6 @@ make -C "$ROOT/deploy" audit > "$RESULT_DIR/audit_after.log" 2>&1 || true
 } > "$RESULT_DIR/summary.txt"
 
 log ""
-log "[+] final benchmark suite complete"
+log "[+] final benchmark suite завершен"
 log "[+] summary: $SUMMARY"
-log "[+] text summary: $RESULT_DIR/summary.txt"
+log "[+] текстовая сводка: $RESULT_DIR/summary.txt"

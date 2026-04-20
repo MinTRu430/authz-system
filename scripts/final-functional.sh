@@ -63,7 +63,7 @@ run_case() {
 
   append_summary "$phase" "$transport" "$scenario" "$expected" "$result" "$rc" "$log_file" "$cmd"
   if [[ "$result" != "pass" ]]; then
-    log "FAILED: ${phase}/${transport}/${scenario}"
+    log "ОШИБКА: ${phase}/${transport}/${scenario}"
     return 1
   fi
 }
@@ -130,8 +130,8 @@ reload_case() {
   run_case "reload-impact" "$transport" "allow_rule_restored" "success" "$allow_cmd"
 }
 
-log "[*] final functional results -> $RESULT_DIR"
-log "[*] starting demo stack"
+log "[*] Результаты final functional -> $RESULT_DIR"
+log "[*] Запуск demo stack"
 "${COMPOSE[@]}" up --build -d | tee -a "$MAIN_LOG"
 sleep "${STACK_SETTLE_SECONDS:-5}"
 snapshot "before"
@@ -172,6 +172,6 @@ snapshot "after"
 } > "$RESULT_DIR/metrics_summary.txt"
 
 log ""
-log "[+] final functional suite complete"
+log "[+] final functional suite завершен"
 log "[+] summary: $SUMMARY"
 log "[+] metrics: $RESULT_DIR/metrics_summary.txt"

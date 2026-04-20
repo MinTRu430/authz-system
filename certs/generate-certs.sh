@@ -16,7 +16,7 @@ SERVICES=("orders" "payments" "policy-server")
 mkdir -p "${OUT}"
 
 if [[ ! -f "${CA_KEY}" || ! -f "${CA_CERT}" ]]; then
-  echo "[*] Generating CA..."
+  echo "[*] Генерация CA..."
   openssl genrsa -out "${CA_KEY}" 4096
   openssl req -x509 -new -nodes -key "${CA_KEY}" -sha256 -days "${DAYS_CA}" \
     -subj "${CA_SUBJ}" -out "${CA_CERT}"
@@ -56,4 +56,4 @@ for s in "${SERVICES[@]}"; do
   [[ -f "${OUT}/${s}.pem" && -f "${OUT}/${s}-key.pem" ]] || gen_service "${s}"
 done
 
-echo "[+] Certs ready in ${OUT}"
+echo "[+] Certificates готовы в ${OUT}"

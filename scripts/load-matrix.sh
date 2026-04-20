@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generates CSV for report:
+# Генерирует CSV для отчета:
 # mode, n, c, rps, p50_ms, p95_ms, p99_ms, avg_ms, ok, fail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,7 +35,7 @@ for C in 1 5 10 20 50 100; do
   P99=$(echo "$RES" | awk '/^  p99:/{print $2}')
   AVG=$(echo "$RES" | awk '/^  avg:/{print $2}')
 
-  # Convert durations like "123ms" / "1.2s" to ms (best-effort)
+  # Конвертирует durations вроде "123ms" / "1.2s" в ms (best-effort).
   to_ms () {
     local v="$1"
     if [[ "$v" == *ms ]]; then echo "${v%ms}"
@@ -49,4 +49,4 @@ for C in 1 5 10 20 50 100; do
 done
 
 echo
-echo "[+] CSV saved: $OUT"
+echo "[+] CSV сохранен: $OUT"
