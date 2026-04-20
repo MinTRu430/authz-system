@@ -56,4 +56,4 @@ for s in "${SERVICES[@]}"; do
   [[ -f "${OUT}/${s}.pem" && -f "${OUT}/${s}-key.pem" ]] || gen_service "${s}"
 done
 
-echo "[+] Certificates готовы в ${OUT}"
+echo "[+] Сертификаты готовы в ${OUT}"

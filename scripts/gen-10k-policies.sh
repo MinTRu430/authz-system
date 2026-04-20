@@ -131,4 +131,4 @@ cat >> "$OUT" <<YAML
   effect: deny
 YAML
 
-echo "[+] Сгенерирован $OUT с $N transport-aware rules (grpc/rest/kafka/nats basics + filler rules + R11 deny-all в конце)"
+echo "[+] Сгенерирован $OUT с $N правилами с учетом транспорта (базовые правила grpc/rest/kafka/nats, дополнительные правила и R11 deny-all в конце)"

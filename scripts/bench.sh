@@ -6,14 +6,14 @@ set -euo pipefail
 #   ./scripts/bench.sh charge 500     # charge, N=500
 #   ./scripts/bench.sh refund 200     # refund (deny path), N=200
 #
-# Измеряет end-to-end latency вызова orders CLI внутри container:
+# Измеряет задержку полного вызова orders CLI внутри контейнера:
 # docker exec orders /app/orders <cmd>
 #
-# Выводит: min/avg/p50/p95/max, RPS
+# Выводит: min/avg/p50/p95/max, RPS.
 
 CMD="${1:-charge}"        # charge|refund
-N="${2:-200}"             # число измеряемых requests
-WARMUP="${WARMUP:-20}"    # warmup requests, не входят в измерение
+N="${2:-200}"             # число измеряемых запросов
+WARMUP="${WARMUP:-20}"    # прогревочные запросы, не входят в измерение
 CONTAINER="${CONTAINER:-orders}"
 
 if [[ "$CMD" != "charge" && "$CMD" != "refund" ]]; then
@@ -26,9 +26,9 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}\$"; then
   exit 1
 fi
 
-echo "[*] Benchmark cmd=${CMD} N=${N} warmup=${WARMUP} container=${CONTAINER}"
+echo "[*] Измерение cmd=${CMD} N=${N} warmup=${WARMUP} container=${CONTAINER}"
 
-# Warmup: ошибки refund игнорируются, для charge ожидается success.
+# Прогрев: ошибки refund игнорируются, для charge ожидается успех.
 for _ in $(seq 1 "${WARMUP}"); do
   if [[ "$CMD" == "refund" ]]; then
     docker exec "${CONTAINER}" /app/orders refund >/dev/null 2>&1 || true
@@ -39,7 +39,7 @@ done
 
 times_ms=()
 
-# Helper: получить monotonic time в ns.
+# Вспомогательная функция: получить монотонное время в ns.
 now_ns() { date +%s%N; }
 
 ok=0
@@ -69,7 +69,7 @@ done
 t1_all=$(now_ns)
 total_ms=$(( (t1_all - t0_all) / 1000000 ))
 
-# Сортировка времен для percentiles.
+# Сортировка времен для процентилей.
 sorted=$(printf "%s\n" "${times_ms[@]}" | sort -n)
 
 min=$(echo "$sorted" | head -n 1)
@@ -79,7 +79,7 @@ sum=0
 for v in "${times_ms[@]}"; do sum=$((sum+v)); done
 avg=$((sum / ${#times_ms[@]}))
 
-# percentile function: nearest-rank.
+# Функция процентиля: nearest-rank.
 # p50 index = ceil(0.50*n), p95 = ceil(0.95*n)
 pctl() {
   local p="$1"
@@ -103,11 +103,11 @@ fi
 
 echo
 echo "=== РЕЗУЛЬТАТЫ (${CMD}) ==="
-echo "Requests: ${N}  warmup: ${WARMUP}"
+echo "Запросы: ${N}  прогрев: ${WARMUP}"
 echo "OK: ${ok}  FAIL: ${fail}"
-echo "Total time: ${total_ms} ms"
+echo "Общее время: ${total_ms} ms"
 echo "RPS: ~${rps}"
-echo "Latency (ms):"
+echo "Задержка (ms):"
 echo "  min: ${min}"
 echo "  avg: ${avg}"
 echo "  p50: ${p50}"

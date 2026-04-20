@@ -9,14 +9,14 @@ OUT="${OUT:-$RESULT_DIR/degrade_${STAMP}.log}"
 
 mkdir -p "$(dirname "$OUT")"
 
-echo "[*] Лог degradation test -> $OUT"
+echo "[*] Лог проверки отказа -> $OUT"
 
 {
   echo "=== ВРЕМЯ ==="
   date -Iseconds
   echo
 
-  echo "=== 0) Baseline: charge при доступном policy-server ==="
+  echo "=== 0) Начальная проверка: charge при доступном policy-server ==="
   docker exec orders /app/orders charge || true
   echo
 
@@ -25,7 +25,7 @@ echo "[*] Лог degradation test -> $OUT"
   sleep 1
   echo
 
-  echo "=== 2) Вызов charge при недоступном policy-server: ожидается deny/fail-closed ==="
+  echo "=== 2) Вызов charge при недоступном policy-server: ожидается запрет ==="
   docker exec orders /app/orders charge || true
   echo
 
@@ -38,7 +38,7 @@ echo "[*] Лог degradation test -> $OUT"
   docker exec orders /app/orders charge || true
   echo
 
-  echo "=== 5) Последние logs: orders/payments/policy-server ==="
+  echo "=== 5) Последние журналы: orders/payments/policy-server ==="
   docker logs --tail 50 orders || true
   echo
   docker logs --tail 50 payments || true
@@ -46,7 +46,7 @@ echo "[*] Лог degradation test -> $OUT"
   docker logs --tail 80 policy-server || true
   echo
 
-  echo "=== 6) Snapshot metrics: payments / policy-server ==="
+  echo "=== 6) Снимок метрик: payments / policy-server ==="
   echo "--- payments /metrics (grep authz_) ---"
   curl -s http://localhost:9090/metrics | egrep "authz_|grpc_" | head -n 50 || true
   echo

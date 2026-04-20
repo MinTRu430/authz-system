@@ -30,7 +30,7 @@ run_bench() {
   local log_file="$RESULT_DIR/${transport}_${scenario}.log"
 
   log ""
-  log "=== bench ${transport}/${scenario} n=${N} c=${C} warmup=${WARMUP} ==="
+  log "=== измерение ${transport}/${scenario} n=${N} c=${C} прогрев=${WARMUP} ==="
   set +e
   docker exec orders /app/transportbench \
     -transport "$transport" \
@@ -43,15 +43,15 @@ run_bench() {
 
   cat "$log_file" | tee -a "$MAIN_LOG"
   if [[ "$rc" -ne 0 ]]; then
-    log "ОШИБКА: bench ${transport}/${scenario}"
+    log "ОШИБКА: измерение ${transport}/${scenario}"
     return "$rc"
   fi
 
   awk -F'CSV: ' '/^CSV: / && $2 !~ /^transport,/ { line=$2 } END { if (line != "") print line }' "$log_file" >> "$SUMMARY"
 }
 
-log "[*] Результаты final benchmark -> $RESULT_DIR"
-log "[*] Запуск demo stack"
+log "[*] Результаты итогового измерения -> $RESULT_DIR"
+log "[*] Запуск стенда"
 "${COMPOSE[@]}" up --build -d | tee -a "$MAIN_LOG"
 sleep "${STACK_SETTLE_SECONDS:-5}"
 
@@ -73,13 +73,13 @@ snapshot_metrics "after"
 make -C "$ROOT/deploy" audit > "$RESULT_DIR/audit_after.log" 2>&1 || true
 
 {
-  echo "=== сводка benchmark ==="
+  echo "=== сводка измерений ==="
   cat "$SUMMARY"
   echo
-  echo "=== authz metrics payments после benchmark ==="
+  echo "=== метрики авторизации payments после измерения ==="
   grep -E 'authz_(checks_total|cache_total|fail_closed_total|policy_check_latency_seconds_(count|sum))' "$RESULT_DIR/payments_metrics_after.prom" || true
   echo
-  echo "=== счетчики async consume в logs ==="
+  echo "=== счетчики асинхронной обработки в журналах ==="
   printf "kafka_consume_ok,"
   grep -c 'KAFKA CONSUME OK' "$RESULT_DIR/docker_after.log" || true
   printf "nats_consume_ok,"
@@ -87,6 +87,6 @@ make -C "$ROOT/deploy" audit > "$RESULT_DIR/audit_after.log" 2>&1 || true
 } > "$RESULT_DIR/summary.txt"
 
 log ""
-log "[+] final benchmark suite завершен"
-log "[+] summary: $SUMMARY"
+log "[+] Итоговое измерение завершено"
+log "[+] сводка: $SUMMARY"
 log "[+] текстовая сводка: $RESULT_DIR/summary.txt"

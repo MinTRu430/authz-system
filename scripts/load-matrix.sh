@@ -35,7 +35,7 @@ for C in 1 5 10 20 50 100; do
   P99=$(echo "$RES" | awk '/^  p99:/{print $2}')
   AVG=$(echo "$RES" | awk '/^  avg:/{print $2}')
 
-  # Конвертирует durations вроде "123ms" / "1.2s" в ms (best-effort).
+  # Конвертирует длительности вроде "123ms" / "1.2s" в ms (best-effort).
   to_ms () {
     local v="$1"
     if [[ "$v" == *ms ]]; then echo "${v%ms}"

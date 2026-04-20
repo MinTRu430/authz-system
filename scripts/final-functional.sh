@@ -44,7 +44,7 @@ run_case() {
   local log_file="$RESULT_DIR/${name}.log"
 
   log ""
-  log "=== ${phase}/${transport}/${scenario} expect=${expected} ==="
+  log "=== ${phase}/${transport}/${scenario} ожидается=${expected} ==="
   log "$cmd"
 
   set +e
@@ -117,7 +117,7 @@ snapshot() {
 reload_case() {
   local transport="$1" rule="$2" allow_cmd="$3"
   log ""
-  log "=== reload impact: ${transport}, rule=${rule} ==="
+  log "=== влияние перезагрузки: ${transport}, правило=${rule} ==="
 
   set_rule_effect "$rule" "deny"
   reload_policies
@@ -130,8 +130,8 @@ reload_case() {
   run_case "reload-impact" "$transport" "allow_rule_restored" "success" "$allow_cmd"
 }
 
-log "[*] Результаты final functional -> $RESULT_DIR"
-log "[*] Запуск demo stack"
+log "[*] Результаты итоговой функциональной проверки -> $RESULT_DIR"
+log "[*] Запуск стенда"
 "${COMPOSE[@]}" up --build -d | tee -a "$MAIN_LOG"
 sleep "${STACK_SETTLE_SECONDS:-5}"
 snapshot "before"
@@ -164,14 +164,14 @@ run_case "degrade" "nats" "consume_fail_closed" "success" "make -C '$ROOT/deploy
 
 snapshot "after"
 {
-  echo "=== payments authz metrics ==="
+  echo "=== метрики авторизации payments ==="
   grep -E 'authz_(checks_total|cache_total|fail_closed_total|policy_check_latency_seconds_(count|sum))' "$RESULT_DIR/payments_metrics_after.prom" || true
   echo
-  echo "=== policy-server metrics ==="
+  echo "=== метрики policy-server ==="
   grep -E 'policy_' "$RESULT_DIR/policy_metrics_after.prom" || true
 } > "$RESULT_DIR/metrics_summary.txt"
 
 log ""
-log "[+] final functional suite завершен"
-log "[+] summary: $SUMMARY"
-log "[+] metrics: $RESULT_DIR/metrics_summary.txt"
+log "[+] Итоговая функциональная проверка завершена"
+log "[+] сводка: $SUMMARY"
+log "[+] метрики: $RESULT_DIR/metrics_summary.txt"

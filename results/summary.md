@@ -1,6 +1,6 @@
 # Итоговая сводка экспериментов
 
-Эта сводка объединяет подтвержденное поведение финальной версии framework `authz-system`.
+Эта сводка объединяет подтвержденное поведение финальной версии `authz-system`.
 
 ## Область проверки
 
@@ -13,12 +13,12 @@
 
 Оценивались свойства:
 
-- корректность allow/deny;
-- dynamic policy reload;
-- fail-closed behavior при деградации policy-server;
-- поведение decision cache;
-- metrics и audit evidence;
-- сравнительные latency/throughput smoke benchmarks.
+- корректность разрешения и запрета;
+- динамическая перезагрузка политик;
+- запрет при отказе во время деградации `policy-server`;
+- поведение кэша решений;
+- метрики и журнал аудита;
+- сравнительные измерения задержки и пропускной способности.
 
 ## Функциональные результаты
 
@@ -30,32 +30,32 @@ make -C deploy final-functional
 
 Подтвержденные проверки:
 
-| Transport | Allow | Deny | Reload Impact | Fail-Closed |
+| Транспорт | Разрешение | Запрет | Влияние перезагрузки | Запрет при отказе |
 |---|---:|---:|---:|---:|
-| gRPC | yes | yes | yes | yes |
-| REST | yes | yes | yes | yes |
-| Kafka publish | yes | yes | yes | yes |
-| Kafka consume | yes | n/a | covered by policy model | yes |
-| NATS publish | yes | yes | yes | yes |
-| NATS consume | yes | n/a | covered by policy model | yes |
+| gRPC | да | да | да | да |
+| REST | да | да | да | да |
+| Kafka публикация | да | да | да | да |
+| Kafka обработка | да | n/a | покрыто моделью политик | да |
+| NATS публикация | да | да | да | да |
+| NATS обработка | да | n/a | покрыто моделью политик | да |
 
-Последний проверенный functional artifact:
+Последний проверенный артефакт функционального прогона:
 
 ```text
 results/final_smoke4/functional/summary.csv
 ```
 
-Все строки в этом smoke run прошли успешно.
+Все строки в этом прогоне прошли успешно.
 
-## Результаты benchmark smoke
+## Результаты быстрого измерения
 
-Финальная benchmark matrix автоматизирована командой:
+Финальная матрица измерений автоматизирована командой:
 
 ```bash
 make -C deploy final-bench
 ```
 
-Последняя short smoke configuration:
+Последняя конфигурация короткого прогона:
 
 ```text
 FINAL_N=20
@@ -63,26 +63,26 @@ FINAL_C=5
 FINAL_WARMUP=5
 ```
 
-Последний short smoke artifact:
+Последний артефакт короткого прогона:
 
 ```text
 results/final_smoke5/bench/bench_summary.csv
 ```
 
-Наблюдаемые short-run results:
+Наблюдаемые результаты короткого прогона:
 
-| Transport | Scenario | p95 ms | Notes |
+| Транспорт | Сценарий | p95 ms | Примечания |
 |---|---|---:|---|
-| gRPC | allow | 0.829 | direct mTLS gRPC path |
-| gRPC | deny | 0.351 | expected PermissionDenied counted as successful deny |
-| REST | allow | 6.593 | mTLS HTTP middleware path |
-| REST | deny | 8.022 | expected 403 counted as successful deny |
-| Kafka | publish allow | 2.334 | publish authz plus broker write |
-| Kafka | publish deny | 0.007 | denied before broker write |
-| NATS | publish allow | 1.024 | publish authz plus broker publish |
-| NATS | publish deny | 0.036 | denied before broker publish |
+| gRPC | разрешение | 0.829 | прямой путь mTLS gRPC |
+| gRPC | запрет | 0.351 | ожидаемый `PermissionDenied` считается успешным запретом |
+| REST | разрешение | 6.593 | путь через mTLS HTTP-обработчик |
+| REST | запрет | 8.022 | ожидаемый `403` считается успешным запретом |
+| Kafka | разрешенная публикация | 2.334 | проверка авторизации и запись в брокер |
+| Kafka | запрещенная публикация | 0.007 | запрет до записи в брокер |
+| NATS | разрешенная публикация | 1.024 | проверка авторизации и публикация в брокер |
+| NATS | запрещенная публикация | 0.036 | запрет до публикации в брокер |
 
-Эти numbers являются smoke-check values, а не финальными статистическими claims. Для диссертационных прогонов следует использовать larger settings, например:
+Эти значения являются быстрой проверкой, а не финальными статистическими выводами. Для диссертационных прогонов следует использовать более крупные настройки, например:
 
 ```bash
 FINAL_N=1000 FINAL_C=50 FINAL_WARMUP=100 make -C deploy final-bench
@@ -90,7 +90,7 @@ FINAL_N=1000 FINAL_C=50 FINAL_WARMUP=100 make -C deploy final-bench
 
 ## Подтверждение метриками
 
-Финальный benchmark smoke сформировал metrics с labels `transport` и `broker`:
+Финальный короткий прогон сформировал метрики с метками `transport` и `broker`:
 
 ```text
 authz_cache_total{broker="kafka",transport="broker",type="hit"} ...
@@ -99,101 +99,101 @@ authz_checks_total{broker="none",transport="grpc",result="allow"} ...
 authz_checks_total{broker="none",transport="http",result="deny"} ...
 ```
 
-Async consume evidence из того же smoke run:
+Подтверждение асинхронной обработки из того же прогона:
 
 ```text
 kafka_consume_ok,25
 nats_consume_ok,25
 ```
 
-## Reload
+## Перезагрузка политик
 
-Reload был проверен для:
+Перезагрузка была проверена для:
 
-- gRPC allow rule `R1`;
-- REST allow rule `R_HTTP_1`;
-- Kafka publish allow rule `R_KAFKA_1`;
-- NATS publish allow rule `R_NATS_1`.
+- разрешающего правила gRPC `R1`;
+- разрешающего правила REST `R_HTTP_1`;
+- разрешающего правила публикации Kafka `R_KAFKA_1`;
+- разрешающего правила публикации NATS `R_NATS_1`.
 
 Метод:
 
-1. Временно изменить effect разрешающего rule на `deny`.
-2. Выполнить policy reload.
-3. Проверить, что ранее разрешенная operation теперь запрещена.
-4. Восстановить allow rule.
-5. Выполнить policy reload.
-6. Проверить, что operation снова успешна.
+1. Временно изменить `effect` разрешающего правила на `deny`.
+2. Выполнить перезагрузку политик.
+3. Проверить, что ранее разрешенная операция теперь запрещена.
+4. Восстановить разрешающее правило.
+5. Выполнить перезагрузку политик.
+6. Проверить, что операция снова успешна.
 
-Важная deployment note: Docker Compose монтирует весь directory `policies`, а не одиночный файл, поэтому policy reload надежно видит file updates.
+Важная особенность развертывания: Docker Compose монтирует весь каталог `policies`, а не одиночный файл, поэтому перезагрузка политик надежно видит изменения файлов.
 
-## Fail-Closed
+## Запрет при отказе
 
-Fail-closed был проверен для:
+Запрет при отказе был проверен для:
 
-- gRPC request path;
-- REST request path;
-- Kafka producer publish;
-- Kafka consumer processing;
-- NATS publisher;
-- NATS subscriber processing.
+- gRPC-запроса;
+- REST-запроса;
+- публикации в Kafka;
+- обработки сообщения Kafka;
+- публикации в NATS;
+- обработки сообщения NATS.
 
 Ожидаемое поведение:
 
-- когда `policy-server` недоступен и `FailOpen=false`, protected operation блокируется;
+- когда `policy-server` недоступен и `FailOpen=false`, защищенная операция блокируется;
 - `authz_fail_closed_total` увеличивается;
-- cached allow decisions не обходят недоступность policy-server.
+- кэшированные разрешающие решения не обходят недоступность `policy-server`.
 
-## Заметки по stress и chaos
+## Заметки по нагрузке и хаосу
 
-Ранее подтвержденные stress scenarios:
+Ранее подтвержденные сценарии:
 
-- baseline и concurrency matrix;
-- 10k policy rules;
-- stress runs с 50k и 200k requests;
-- reload under load;
-- policy-server flap;
-- degrade tests.
+- базовая матрица и матрица по уровню параллелизма;
+- 10k правил политик;
+- прогоны с 50k и 200k запросов;
+- перезагрузка политик под нагрузкой;
+- периодическая остановка и запуск `policy-server`;
+- проверки деградации.
 
-Representative confirmed result:
+Показательный подтвержденный результат:
 
 ```text
-10k rules, charge, concurrency=100:
+10k правил, charge, параллелизм=100:
 avg ~8.5 ms, p95 ~14 ms, p99 ~18 ms
 ```
 
-Длинные stress runs показали рост tail latency. Это интерпретируется как operational limitation при sustained load, а не как safety violation: authorization остается fail-closed.
+Длинные нагрузочные прогоны показали рост хвостовой задержки. Это интерпретируется как эксплуатационное ограничение при длительной нагрузке, а не как нарушение безопасности: авторизация остается в режиме запрета при отказе.
 
 ## Интерпретация
 
-Sync vs async:
+Синхронные и асинхронные транспорты:
 
-- gRPC и REST защищают direct request/response paths.
-- Kafka и NATS защищают publish и consume boundaries.
-- Broker deny paths дешевле, потому что denied messages отклоняются до broker write.
+- gRPC и REST защищают прямые пути запрос/ответ;
+- Kafka и NATS защищают границы публикации и обработки сообщений;
+- запрет для брокеров дешевле, потому что сообщение отклоняется до записи или публикации.
 
-Kafka vs NATS:
+Kafka и NATS:
 
-- оба используют одну broker abstraction и policy model;
-- Kafka демонстрирует durable topic-based async flow;
-- NATS демонстрирует lightweight subject-based async flow;
-- добавление NATS не потребовало изменений в authorization core.
+- оба транспорта используют один слой обмена сообщениями и одну модель политик;
+- Kafka показывает устойчивый асинхронный поток на основе тем;
+- NATS показывает легковесный асинхронный поток на основе subjects;
+- добавление NATS не потребовало изменений в ядре авторизации.
 
-Cache:
+Кэш:
 
-- cache hit/miss metrics подтверждают, что repeated checks избегают repeated policy decisions;
-- cache keys включают transport, broker и message type;
-- fail-closed safety имеет приоритет над cached allow decisions.
+- метрики попаданий и промахов подтверждают, что повторные проверки избегают повторных решений на `policy-server`;
+- ключи кэша включают транспорт, брокер и тип сообщения;
+- запрет при отказе имеет приоритет над кэшированными разрешениями.
 
-Transport-agnostic architecture:
+Транспортно-независимая архитектура:
 
-- все transports сходятся в один `AuthzRequest`;
-- policy-server не знает implementation details transports;
-- добавление второго broker adapter подтвердило extensibility.
+- все транспорты сходятся в один `AuthzRequest`;
+- `policy-server` не знает деталей реализации транспортов;
+- добавление второго модуля для брокера сообщений подтвердило расширяемость.
 
 ## Рекомендации по дальнейшей оптимизации
 
-- Добавить persistent NATS JetStream scenario для durable consume experiments.
-- Добавить broker-authenticated identities вместо demo message headers.
-- Добавить matrix benchmarks для REST и broker paths по аналогии с существующей gRPC load matrix.
-- Добавить dashboards с разбиением по `transport` и `broker`.
-- Добавить CI smoke checks для `go test`, compose config и final functional smoke.
+- Добавить сценарий NATS JetStream для устойчивых экспериментов с обработкой сообщений.
+- Добавить идентификацию через механизмы брокера вместо служебных заголовков сообщений.
+- Добавить матричные измерения для REST и брокеров по аналогии с существующей gRPC-матрицей нагрузки.
+- Добавить панели мониторинга с разбиением по `transport` и `broker`.
+- Добавить проверки непрерывной интеграции для `go test`, compose config и итогового функционального прогона.

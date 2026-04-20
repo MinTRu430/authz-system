@@ -1,19 +1,19 @@
 # Результаты экспериментов
 
-Финальные experiment scripts сохраняют timestamped artifacts в этот directory.
+Итоговые скрипты экспериментов сохраняют артефакты с временной меткой в этот каталог.
 
-Сгенерированные paths намеренно игнорируются git:
+Сгенерированные пути намеренно игнорируются git:
 
 - `results/final/<timestamp>/functional/`
 - `results/final/<timestamp>/bench/`
-- custom `RESULT_DIR=...` smoke runs, например `results/final_smoke5/`
+- пользовательские прогоны через `RESULT_DIR=...`, например `results/final_smoke5/`
 
-Основные files:
+Основные файлы:
 
-- `summary.csv` для functional allow/deny/reload/degrade checks;
-- `bench_summary.csv` для latency и throughput measurements;
-- `payments_metrics_*.prom` и `policy_metrics_*.prom` для Prometheus snapshots;
-- `audit_*.log` для policy reload audit evidence;
-- `docker_*.log` для service logs и async consume evidence.
+- `summary.csv` для проверок разрешения, запрета, перезагрузки и отказов;
+- `bench_summary.csv` для измерений задержки и пропускной способности;
+- `payments_metrics_*.prom` и `policy_metrics_*.prom` для снимков Prometheus;
+- `audit_*.log` для подтверждения записей журнала аудита при перезагрузке политик;
+- `docker_*.log` для журналов служб и подтверждения асинхронной обработки.
 
-Итоговая curated summary хранится в `results/summary.md`.
+Итоговая сводка хранится в `results/summary.md`.

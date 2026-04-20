@@ -4,7 +4,7 @@
 
 ## Цель
 
-Проект реализует транспортно-независимый фреймворк централизованной авторизации межсервисного взаимодействия. Он показывает, что один и тот же authorization core может защищать синхронные и асинхронные interaction paths без встраивания transport-specific логики в policy engine.
+Проект реализует транспортно-независимую систему централизованной авторизации межсервисного взаимодействия. Один и тот же модуль ядра защищает синхронные и асинхронные пути взаимодействия без встраивания логики конкретного транспорта в механизм проверки политик.
 
 Поддерживаемые транспорты:
 
@@ -13,20 +13,20 @@
 - Kafka;
 - NATS.
 
-## Core authorization layer
+## Ядро авторизации
 
-Ядро фреймворка находится в `internal/authz`.
+Ядро находится в `internal/authz`.
 
-Ответственность core:
+Ответственность ядра:
 
 - определять общую модель `AuthzRequest`;
-- нормализовать legacy gRPC rules и transport-specific requests;
-- обрабатывать policy decisions, возвращаемые `policy-server`;
-- кэшировать решения с transport-aware keys;
-- обеспечивать fail-closed behavior при `FailOpen=false`;
-- экспортировать Prometheus metrics.
+- нормализовать устаревшие gRPC-правила и запросы разных транспортов;
+- обрабатывать решения, возвращаемые `policy-server`;
+- кэшировать решения с ключами, учитывающими транспорт;
+- обеспечивать запрет при отказе при `FailOpen=false`;
+- экспортировать метрики Prometheus.
 
-Общие поля request:
+Общие поля запроса:
 
 - `source`;
 - `target`;
@@ -36,104 +36,104 @@
 - `broker`;
 - `message_type`.
 
-Core не зависит от Kafka, NATS, HTTP routing internals или gRPC protobuf definitions.
+Ядро не зависит от Kafka, NATS, внутреннего устройства HTTP-маршрутизации или gRPC protobuf-описаний.
 
-## Policy Server
+## Сервер политик
 
 `policy-server` является централизованной точкой принятия решений.
 
 Ответственность:
 
-- загружать YAML policy rules;
-- предоставлять `/v1/check` для authorization decisions;
-- предоставлять `/v1/policies/reload` для dynamic reload;
-- записывать audit events для administrative reload operations;
-- экспортировать Prometheus metrics;
-- применять default-deny semantics через порядок policies.
+- загружать YAML-правила политик;
+- предоставлять `/v1/check` для принятия решений авторизации;
+- предоставлять `/v1/policies/reload` для динамической перезагрузки;
+- записывать события журнала аудита для административных операций перезагрузки;
+- экспортировать метрики Prometheus;
+- применять запрет по умолчанию через порядок правил.
 
-Policies монтируются в Docker Compose как directory, поэтому reload видит изменения файлов без перезапуска container.
+Политики монтируются в Docker Compose как каталог, поэтому перезагрузка видит изменения файлов без перезапуска контейнера.
 
-## gRPC Adapter
+## Модуль gRPC
 
-gRPC adapter находится в `internal/authz/grpcadapter` и реализован как unary и stream interceptors.
+Модуль gRPC находится в `internal/authz/grpcadapter` и реализован как перехватчики одиночных и потоковых вызовов.
 
 Поток выполнения:
 
-1. Извлечь caller service identity из mTLS.
-2. Прочитать full gRPC method name.
+1. Извлечь идентификатор вызывающей службы из mTLS.
+2. Прочитать полное имя gRPC-метода.
 3. Построить `AuthzRequest` с `transport=grpc`.
-4. Вызвать core authorizer.
-5. Разрешить handler или вернуть `PermissionDenied`.
+4. Вызвать общий модуль проверки авторизации.
+5. Разрешить обработчик или вернуть `PermissionDenied`.
 
-Legacy `rpc` policy rules сохранены для backward compatibility.
+Устаревшие правила с полем `rpc` сохранены для обратной совместимости.
 
-## REST Adapter
+## Модуль REST
 
-REST adapter находится в `internal/authz/httpadapter` и реализован как HTTP middleware.
+Модуль REST находится в `internal/authz/httpadapter` и реализован как промежуточный HTTP-обработчик.
 
 Поток выполнения:
 
-1. Извлечь caller service identity из mTLS.
-2. Нормализовать route path без query parameters.
-3. Использовать HTTP method как `operation`.
+1. Извлечь идентификатор вызывающей службы из mTLS.
+2. Нормализовать путь маршрута без параметров запроса.
+3. Использовать HTTP-метод как `operation`.
 4. Построить `AuthzRequest` с `transport=http`.
-5. Разрешить handler или вернуть `403 Forbidden`.
+5. Разрешить обработчик или вернуть `403 Forbidden`.
 
-Demo endpoints:
+Защищаемые маршруты:
 
 - `POST /payments/charge`;
 - `POST /payments/refund`.
 
-## Broker abstraction layer
+## Слой обмена сообщениями
 
-Generic broker layer определяет authorization boundaries для publish/consume.
+Общий слой обмена сообщениями задает границы авторизации для публикации и обработки сообщений.
 
-Общие поля async interaction:
+Общие поля асинхронного взаимодействия:
 
-- source service;
-- target logical service;
-- broker name;
-- operation: `publish` или `consume`;
-- resource: topic, subject или queue;
-- message type.
+- служба-источник;
+- целевая логическая служба;
+- имя брокера сообщений;
+- операция: `publish` или `consume`;
+- ресурс: topic, subject или queue;
+- тип сообщения.
 
-Этот слой позволяет broker-specific adapters нормализовать сообщения в ту же core model.
+Этот слой позволяет модулям Kafka и NATS нормализовать сообщения в ту же модель ядра.
 
-## Kafka Adapter
+## Модуль Kafka
 
-Kafka adapter защищает:
+Модуль Kafka защищает:
 
-- producer publish;
-- consumer processing.
+- публикацию сообщения;
+- обработку сообщения.
 
-Demo flow:
+Поток выполнения:
 
 1. `orders` публикует `payment.requested.v1` в topic `payments.requested`.
-2. `payments` consume-ит сообщение.
-3. Publish и consume оба выполняют authorization checks.
+2. `payments` читает сообщение.
+3. Публикация и обработка сообщения выполняют проверки авторизации.
 
-Demo metadata headers:
+Служебные заголовки сообщений:
 
 - `X-Service-Name`;
 - `X-Message-Type`.
 
-## NATS Adapter
+## Модуль NATS
 
-NATS adapter реализует тот же broker contract для NATS subjects.
+Модуль NATS реализует тот же договор для NATS subjects.
 
-Demo flow:
+Поток выполнения:
 
 1. `orders` публикует `payment.requested.v1` в subject `payments.requested`.
-2. `payments` получает сообщение и выполняет authorization перед обработкой.
-3. Запрещенный publish в `payments.refund.forced` блокируется.
+2. `payments` получает сообщение и выполняет авторизацию перед обработкой.
+3. Запрещенная публикация в `payments.refund.forced` блокируется.
 
-Это подтверждает, что broker abstraction может поддерживать несколько brokers без изменения core logic.
+Это подтверждает, что слой обмена сообщениями может поддерживать несколько брокеров без изменения логики ядра.
 
-## Cache
+## Кэш решений
 
-Decision cache является частью framework core.
+Кэш решений является частью ядра.
 
-Поля cache key:
+Поля ключа кэша:
 
 - source;
 - target;
@@ -143,28 +143,28 @@ Decision cache является частью framework core.
 - broker;
 - message type.
 
-Cache различает gRPC, REST, Kafka и NATS interactions. Дефект fail-open-through-cache был исправлен: allow cache hits все равно проверяют доступность policy-server при `FailOpen=false`, поэтому недоступность policy-server приводит к fail-closed denial.
+Кэш различает gRPC, REST, Kafka и NATS взаимодействия. Дефект fail-open-through-cache исправлен: попадания разрешающих решений в кэш все равно проверяют доступность `policy-server` при `FailOpen=false`, поэтому недоступность `policy-server` приводит к запрету при отказе.
 
-## Fail-Closed
+## Запрет при отказе
 
-При `FailOpen=false` любая недоступность policy-server приводит к denial.
+При `FailOpen=false` любая недоступность `policy-server` приводит к запрету.
 
 Подтвержденные случаи:
 
-- gRPC request blocked;
-- REST request blocked;
-- Kafka publish blocked;
-- Kafka consume processing blocked;
-- NATS publish blocked;
-- NATS consume processing blocked.
+- gRPC-запрос блокируется;
+- REST-запрос блокируется;
+- публикация в Kafka блокируется;
+- обработка сообщения Kafka блокируется;
+- публикация в NATS блокируется;
+- обработка сообщения NATS блокируется.
 
 Метрика:
 
 - `authz_fail_closed_total`.
 
-## Observability
+## Наблюдаемость
 
-Metrics:
+Метрики:
 
 - `authz_checks_total{result,transport,broker}`;
 - `authz_cache_total{type,transport,broker}`;
@@ -172,23 +172,23 @@ Metrics:
 - `authz_fail_closed_total`;
 - `policy_decisions_total{result}`.
 
-Monitoring stack:
+Средства наблюдения:
 
 - Prometheus;
 - Grafana;
-- policy reload audit log.
+- журнал аудита перезагрузки политик.
 
 ## Архитектурные свойства
 
 Подтвержденные свойства:
 
-- centralized authorization decision point;
-- transport-agnostic core request model;
-- reusable policy model для sync и async interactions;
-- adapter-based extension model;
-- поддержка нескольких brokers;
-- dynamic policy reload;
-- fail-closed safety;
-- decision caching;
-- воспроизводимый Docker demo environment;
-- воспроизводимые functional и benchmark experiment scripts.
+- централизованная точка принятия решений авторизации;
+- транспортно-независимая модель запроса в ядре;
+- единая модель политик для синхронных и асинхронных взаимодействий;
+- расширяемая модель транспортных модулей;
+- поддержка нескольких брокеров сообщений;
+- динамическая перезагрузка политик;
+- запрет при отказе;
+- кэширование решений;
+- воспроизводимое окружение Docker;
+- воспроизводимые сценарии функциональных и нагрузочных экспериментов.
