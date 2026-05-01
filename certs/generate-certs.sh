@@ -46,14 +46,37 @@ DNS.1 = ${name}
 DNS.2 = ${name}.local
 EOF
 
+  if [[ "${name}" == "policy-server" ]]; then
+    cat >> "${ext}" <<EOF
+DNS.3 = policy-server-1
+DNS.4 = policy-server-2
+DNS.5 = policy-server-3
+DNS.6 = localhost
+EOF
+  fi
+
   openssl x509 -req -in "${csr}" -CA "${CA_CERT}" -CAkey "${CA_KEY}" -CAcreateserial \
     -out "${cert}" -days "${DAYS_SVC}" -sha256 -extfile "${ext}"
 
   rm -f "${csr}" "${ext}"
 }
 
+needs_service_cert() {
+  local name="$1"
+  local key="${OUT}/${name}-key.pem"
+  local cert="${OUT}/${name}.pem"
+
+  [[ -f "${cert}" && -f "${key}" ]] || return 0
+  if [[ "${name}" == "policy-server" ]]; then
+    openssl x509 -in "${cert}" -noout -text | grep -q "DNS:policy-server-1" || return 0
+    openssl x509 -in "${cert}" -noout -text | grep -q "DNS:policy-server-2" || return 0
+    openssl x509 -in "${cert}" -noout -text | grep -q "DNS:policy-server-3" || return 0
+  fi
+  return 1
+}
+
 for s in "${SERVICES[@]}"; do
-  [[ -f "${OUT}/${s}.pem" && -f "${OUT}/${s}-key.pem" ]] || gen_service "${s}"
+  needs_service_cert "${s}" && gen_service "${s}"
 done
 
 echo "[+] Сертификаты готовы в ${OUT}"

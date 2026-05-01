@@ -53,6 +53,8 @@
 
 Политики монтируются в Docker Compose как каталог, поэтому перезагрузка видит изменения файлов без перезапуска контейнера.
 
+В окружении Docker Compose запускаются три экземпляра `policy-server`: `policy-server-1`, `policy-server-2` и `policy-server-3`. Клиенты получают список endpoint-ов через `POLICY_URLS` и переключаются между репликами при ошибках доступности.
+
 ## Модуль gRPC
 
 Модуль gRPC находится в `internal/authz/grpcadapter` и реализован как перехватчики одиночных и потоковых вызовов.
@@ -129,6 +131,25 @@
 
 Это подтверждает, что слой обмена сообщениями может поддерживать несколько брокеров без изменения логики ядра.
 
+## Криптографическая идентификация сообщений
+
+Kafka и NATS сообщения подписываются HMAC-SHA256 до отправки. Подпись покрывает broker, topic/subject, source service, message type, timestamp и SHA-256 полезной нагрузки. Consumer проверяет подпись до нормализации `BrokerInteraction` и до обращения к `policy-server`.
+
+Сообщения с отсутствующей подписью, неизвестным ключом службы, неверным hash полезной нагрузки или timestamp вне допустимого окна отклоняются без обработки. Это устраняет доверие к служебным заголовкам как к неподтвержденному источнику идентичности.
+
+## Надежность асинхронной обработки
+
+Для Kafka и NATS добавлен общий слой надежности обработки сообщений:
+
+- terminal errors отправляются в dead-letter resource;
+- временная недоступность политик и ошибки обработчика повторяются с backoff;
+- после исчерпания повторов сообщение отправляется в DLQ;
+- успешный путь обработки не меняется.
+
+Kafka использует DLQ topic вида `authz.dlq.<topic>` и подтверждает исходный offset только после успешной обработки или успешной публикации в DLQ. Если DLQ publish завершается ошибкой, offset не подтверждается.
+
+NATS использует DLQ subject вида `authz.dlq.<subject>` и локальные повторы, так как обычный NATS без JetStream не предоставляет полноценный механизм explicit ack/requeue.
+
 ## Кэш решений
 
 Кэш решений является частью ядра.
@@ -143,11 +164,11 @@
 - broker;
 - message type.
 
-Кэш различает gRPC, REST, Kafka и NATS взаимодействия. Дефект fail-open-through-cache исправлен: попадания разрешающих решений в кэш все равно проверяют доступность `policy-server` при `FailOpen=false`, поэтому недоступность `policy-server` приводит к запрету при отказе.
+Кэш различает gRPC, REST, Kafka и NATS взаимодействия. Дефект fail-open-through-cache исправлен: попадания разрешающих решений в кэш все равно проверяют готовность `policy-server` через прикладной health check при `FailOpen=false`. При нескольких экземплярах достаточно одного готового `policy-server`; если все экземпляры недоступны, запрос запрещается.
 
 ## Запрет при отказе
 
-При `FailOpen=false` любая недоступность `policy-server` приводит к запрету.
+При `FailOpen=false` недоступность всех настроенных экземпляров `policy-server` приводит к запрету. Клиент авторизации поддерживает три endpoint-а, хранит circuit breaker/backoff отдельно для каждого экземпляра и переключается на следующий экземпляр при транспортной ошибке или неготовности текущего.
 
 Подтвержденные случаи:
 
@@ -167,16 +188,41 @@
 Метрики:
 
 - `authz_checks_total{result,transport,broker}`;
+- `authz_protected_operations_total{transport,broker,result}`;
 - `authz_cache_total{type,transport,broker}`;
 - `authz_policy_check_latency_seconds{transport,broker}`;
 - `authz_fail_closed_total`;
-- `policy_decisions_total{result}`.
+- `authz_policy_circuit_transitions_total{state}`;
+- `authz_policy_availability_state`;
+- `authz_policy_failover_total`;
+- `authz_policy_endpoint_requests_total{endpoint,result}`;
+- `authz_policy_endpoint_health_total{endpoint,result}`;
+- `authz_policy_endpoint_availability_state{endpoint}`;
+- `authz_message_signed_total{broker}`;
+- `authz_message_signature_checks_total{broker,result}`;
+- `authz_message_signature_failures_total{broker,reason}`;
+- `authz_broker_message_processing_total{broker,result}`;
+- `authz_broker_messages_retried_total{broker,reason}`;
+- `authz_broker_messages_deadlettered_total{broker,reason}`;
+- `authz_broker_dlq_publish_errors_total{broker}`;
+- `authz_broker_consume_errors_total{broker,reason}`;
+- `policy_decisions_total{result}`;
+- `policy_check_requests_total{result}`;
+- `policy_check_duration_seconds`;
+- `policy_match_latency_seconds`;
+- `policy_reload_total{result}`;
+- `policy_reload_duration_seconds`;
+- `policy_rules_total`;
+- `policy_index_buckets_total`.
 
 Средства наблюдения:
 
 - Prometheus;
 - Grafana;
-- журнал аудита перезагрузки политик.
+- журнал аудита перезагрузки политик;
+- OpenTelemetry-трассировка ключевого пути авторизации.
+
+Трассировка выключена по умолчанию и включается через `OTEL_ENABLED=true`. Поддержаны stdout exporter и OTLP exporter. Spans покрывают транспортный модуль, `Authorizer`, кэш, policy client, `policy-server`, сопоставление правил, проверку подписи сообщений, retry и DLQ. В атрибуты не попадают полезная нагрузка, секреты, подписи, topic/subject, message type, source/target и номера правил.
 
 ## Архитектурные свойства
 
@@ -187,6 +233,8 @@
 - единая модель политик для синхронных и асинхронных взаимодействий;
 - расширяемая модель транспортных модулей;
 - поддержка нескольких брокеров сообщений;
+- криптографическая проверка идентичности Kafka/NATS сообщений;
+- retry и dead-letter поведение для асинхронных сообщений;
 - динамическая перезагрузка политик;
 - запрет при отказе;
 - кэширование решений;

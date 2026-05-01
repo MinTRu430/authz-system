@@ -19,6 +19,7 @@ import (
 
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
+	"authz-system/internal/authz/brokersign"
 	"authz-system/internal/authz/kafkaadapter"
 	"authz-system/internal/authz/natsadapter"
 
@@ -70,6 +71,16 @@ func main() {
 	if *n <= 0 || *c <= 0 {
 		log.Fatalf("invalid -n or -c")
 	}
+
+	shutdownTracing, err := authz.InitTracingFromEnv(context.Background(), envDefault("SERVICE_NAME", "transportbench"))
+	if err != nil {
+		log.Fatalf("init tracing: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
 
 	client, err := newBenchClient(*transport, *scenario)
 	if err != nil {
@@ -361,9 +372,15 @@ func natsResourceForScenario(scenario string) (string, string) {
 }
 
 func brokerAuthzConfig(targetEnv string) authz.Config {
+	policyURL := os.Getenv("POLICY_URL")
+	policyURLs := splitCSV(os.Getenv("POLICY_URLS"))
+	if policyURL == "" && len(policyURLs) == 0 {
+		log.Fatal("missing env POLICY_URL or POLICY_URLS")
+	}
 	return authz.Config{
 		TargetService: envDefault(targetEnv, "payments"),
-		PolicyURL:     mustEnv("POLICY_URL"),
+		PolicyURL:     policyURL,
+		PolicyURLs:    policyURLs,
 		FailOpen:      false,
 		Timeout:       250 * time.Millisecond,
 		CacheTTL:      2 * time.Second,
@@ -372,6 +389,11 @@ func brokerAuthzConfig(targetEnv string) authz.Config {
 			KeyFile:  envDefault("POLICY_KEY_FILE", mustEnv("KEY_FILE")),
 			CAFile:   envDefault("POLICY_CA_FILE", mustEnv("CA_FILE")),
 		},
+		BrokerSigningMode:         envDefault("AUTHZ_MESSAGE_SIGNING_MODE", brokersign.ModeRequired),
+		BrokerSigningSecret:       os.Getenv("AUTHZ_MESSAGE_SIGNING_SECRET"),
+		BrokerVerificationSecrets: os.Getenv("AUTHZ_MESSAGE_VERIFICATION_SECRETS"),
+		BrokerMessageMaxAge:       durationEnvDefault("AUTHZ_MESSAGE_MAX_AGE", brokersign.DefaultMaxAge),
+		BrokerMessageFutureSkew:   durationEnvDefault("AUTHZ_MESSAGE_FUTURE_SKEW", brokersign.DefaultFutureSkew),
 	}
 }
 
@@ -502,4 +524,16 @@ func envDefault(k, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func durationEnvDefault(k string, fallback time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Fatalf("invalid duration env %s=%q: %v", k, v, err)
+	}
+	return d
 }

@@ -9,11 +9,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type TLSFiles struct {
@@ -24,12 +25,32 @@ type TLSFiles struct {
 
 var ErrPolicyUnavailable = errors.New("policy-server unavailable")
 
+type PolicyDecisionClient interface {
+	Check(ctx context.Context, req CheckRequest) (CheckResponse, error)
+	EnsureAvailable(ctx context.Context) error
+}
+
+const (
+	defaultPolicyHealthPositiveTTL  = 2 * time.Second
+	defaultPolicyUnavailableBackoff = 2 * time.Second
+
+	policyAvailabilityUnknown int32 = iota
+	policyAvailabilityHealthy
+	policyAvailabilityUnavailable
+)
+
 type PolicyClient struct {
 	BaseURL string
 	HTTP    *http.Client
 
-	downUntil atomic.Int64
-	downFor   time.Duration
+	downUntil         atomic.Int64
+	healthOKUntil     atomic.Int64
+	availabilityState atomic.Int32
+
+	downFor           time.Duration
+	healthPositiveTTL time.Duration
+	now               func() time.Time
+	metricsEndpoint   string
 }
 
 func NewPolicyClient(baseURL string, timeout time.Duration, tlsFiles TLSFiles) (*PolicyClient, error) {
@@ -41,12 +62,14 @@ func NewPolicyClient(baseURL string, timeout time.Duration, tlsFiles TLSFiles) (
 		return nil, err
 	}
 	return &PolicyClient{
-		BaseURL: baseURL,
+		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP: &http.Client{
 			Timeout:   timeout,
 			Transport: tr,
 		},
-		downFor: 3 * time.Second,
+		downFor:           defaultPolicyUnavailableBackoff,
+		healthPositiveTTL: defaultPolicyHealthPositiveTTL,
+		metricsEndpoint:   "0",
 	}, nil
 }
 
@@ -80,33 +103,80 @@ func (c *PolicyClient) isDown(now time.Time) bool {
 	return until != 0 && now.UnixNano() < until
 }
 
-func (c *PolicyClient) markDown(now time.Time) {
-	c.downUntil.Store(now.Add(c.downFor).UnixNano())
-}
-
 func (c *PolicyClient) IsDown() bool {
-	return c.isDown(time.Now())
+	return c.isDown(c.clockNow())
 }
 
-// Probe проверяет доступность policy-server на уровне TCP (быстро, без HTTP).
-// Используется, чтобы не допустить "fail-open through cache".
-func (c *PolicyClient) Probe(timeout time.Duration) bool {
-	u, err := url.Parse(c.BaseURL)
-	if err != nil {
-		return false
+func (c *PolicyClient) configureAvailability(healthTTL, unavailableBackoff time.Duration) {
+	if healthTTL > 0 {
+		c.healthPositiveTTL = healthTTL
 	}
-	host := u.Host
-	if host == "" {
-		return false
+	if unavailableBackoff > 0 {
+		c.downFor = unavailableBackoff
 	}
+}
 
-	d := net.Dialer{Timeout: timeout}
-	conn, err := d.Dial("tcp", host)
-	if err != nil {
-		return false
+func (c *PolicyClient) setMetricsEndpoint(endpoint string) {
+	c.metricsEndpoint = metricEndpoint(endpoint)
+}
+
+func (c *PolicyClient) metricEndpoint() string {
+	return metricEndpoint(c.metricsEndpoint)
+}
+
+func (c *PolicyClient) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
 	}
-	_ = conn.Close()
-	return true
+	return time.Now()
+}
+
+func (c *PolicyClient) healthTTL() time.Duration {
+	if c.healthPositiveTTL <= 0 {
+		return defaultPolicyHealthPositiveTTL
+	}
+	return c.healthPositiveTTL
+}
+
+func (c *PolicyClient) unavailableBackoff() time.Duration {
+	if c.downFor <= 0 {
+		return defaultPolicyUnavailableBackoff
+	}
+	return c.downFor
+}
+
+func (c *PolicyClient) hasFreshHealth(now time.Time) bool {
+	until := c.healthOKUntil.Load()
+	return until != 0 && now.UnixNano() < until
+}
+
+func (c *PolicyClient) markAvailable(now time.Time) {
+	c.downUntil.Store(0)
+	c.healthOKUntil.Store(now.Add(c.healthTTL()).UnixNano())
+	c.markHealthyState()
+}
+
+func (c *PolicyClient) markCheckAvailable() {
+	c.downUntil.Store(0)
+	c.markHealthyState()
+}
+
+func (c *PolicyClient) markHealthyState() {
+	if c.availabilityState.Swap(policyAvailabilityHealthy) != policyAvailabilityHealthy {
+		recordPolicyCircuitTransition("healthy")
+	}
+	recordPolicyAvailabilityState(1)
+	recordPolicyEndpointAvailabilityState(c.metricEndpoint(), 1)
+}
+
+func (c *PolicyClient) markUnavailable(now time.Time) {
+	c.healthOKUntil.Store(0)
+	c.downUntil.Store(now.Add(c.unavailableBackoff()).UnixNano())
+	if c.availabilityState.Swap(policyAvailabilityUnavailable) != policyAvailabilityUnavailable {
+		recordPolicyCircuitTransition("unavailable")
+	}
+	recordPolicyAvailabilityState(0)
+	recordPolicyEndpointAvailabilityState(c.metricEndpoint(), 0)
 }
 
 func isTransportErr(err error) bool {
@@ -131,45 +201,140 @@ func isTransportErr(err error) bool {
 	return false
 }
 
-func (c *PolicyClient) Check(ctx context.Context, req CheckRequest) (CheckResponse, error) {
-	now := time.Now()
+func (c *PolicyClient) Health(ctx context.Context) error {
+	ctx, span := StartSpan(ctx, "authz.policy.health", attribute.String("authz.policy_endpoint_index", c.metricEndpoint()))
+	result := "error"
+	var spanErr error
+	defer func() {
+		EndSpanWithResult(span, result, spanErr)
+		span.End()
+	}()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/health", nil)
+	if err != nil {
+		recordPolicyHealth("fail")
+		recordPolicyEndpointHealth(c.metricEndpoint(), "error")
+		c.markUnavailable(c.clockNow())
+		spanErr = err
+		return err
+	}
+	InjectHTTP(ctx, httpReq.Header)
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		recordPolicyHealth("fail")
+		recordPolicyEndpointHealth(c.metricEndpoint(), "unavailable")
+		if isTransportErr(err) {
+			c.markUnavailable(c.clockNow())
+			result = "unavailable"
+			spanErr = ErrPolicyUnavailable
+			return ErrPolicyUnavailable
+		}
+		c.markUnavailable(c.clockNow())
+		spanErr = err
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		recordPolicyHealth("fail")
+		recordPolicyEndpointHealth(c.metricEndpoint(), "unavailable")
+		c.markUnavailable(c.clockNow())
+		result = "unavailable"
+		spanErr = ErrPolicyUnavailable
+		return ErrPolicyUnavailable
+	}
+
+	recordPolicyHealth("ok")
+	recordPolicyEndpointHealth(c.metricEndpoint(), "ok")
+	c.markAvailable(c.clockNow())
+	result = "ok"
+	return nil
+}
+
+func (c *PolicyClient) EnsureAvailable(ctx context.Context) error {
+	now := c.clockNow()
+	if c.hasFreshHealth(now) {
+		return nil
+	}
 	if c.isDown(now) {
+		return ErrPolicyUnavailable
+	}
+	return c.Health(ctx)
+}
+
+func (c *PolicyClient) Check(ctx context.Context, req CheckRequest) (CheckResponse, error) {
+	req = req.Normalize()
+	attrs := append(SafeAuthzAttrs(req), attribute.String("authz.policy_endpoint_index", c.metricEndpoint()))
+	ctx, span := StartSpan(ctx, "authz.policy.check", attrs...)
+	result := "error"
+	var spanErr error
+	defer func() {
+		EndSpanWithResult(span, result, spanErr)
+		span.End()
+	}()
+
+	now := c.clockNow()
+	if c.isDown(now) {
+		recordPolicyEndpointRequest(c.metricEndpoint(), "unavailable")
+		result = "unavailable"
+		spanErr = ErrPolicyUnavailable
 		return CheckResponse{}, ErrPolicyUnavailable
 	}
 
-	req = req.Normalize()
 	body, err := json.Marshal(req)
 	if err != nil {
+		recordPolicyEndpointRequest(c.metricEndpoint(), "error")
+		spanErr = err
 		return CheckResponse{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/check", bytes.NewReader(body))
 	if err != nil {
+		recordPolicyEndpointRequest(c.metricEndpoint(), "error")
+		spanErr = err
 		return CheckResponse{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	InjectHTTP(ctx, httpReq.Header)
 
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		if isTransportErr(err) {
-			c.markDown(now)
+			c.markUnavailable(c.clockNow())
+			recordPolicyEndpointRequest(c.metricEndpoint(), "unavailable")
+			result = "unavailable"
+			spanErr = ErrPolicyUnavailable
 			return CheckResponse{}, ErrPolicyUnavailable
 		}
+		recordPolicyEndpointRequest(c.metricEndpoint(), "error")
+		spanErr = err
 		return CheckResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode >= 500 {
-			c.markDown(now)
+			c.markUnavailable(c.clockNow())
+			recordPolicyEndpointRequest(c.metricEndpoint(), "unavailable")
+			result = "unavailable"
+			spanErr = ErrPolicyUnavailable
 			return CheckResponse{}, ErrPolicyUnavailable
 		}
+		recordPolicyEndpointRequest(c.metricEndpoint(), "error")
+		spanErr = errors.New("policy status")
 		return CheckResponse{}, errors.New("policy status: " + resp.Status)
 	}
 
 	var out CheckResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		c.markDown(now)
+		c.markUnavailable(c.clockNow())
+		recordPolicyEndpointRequest(c.metricEndpoint(), "unavailable")
+		result = "unavailable"
+		spanErr = ErrPolicyUnavailable
 		return CheckResponse{}, ErrPolicyUnavailable
 	}
+	c.markCheckAvailable()
+	recordPolicyEndpointRequest(c.metricEndpoint(), decisionResult(out))
+	result = decisionResult(out)
 	return out, nil
 }

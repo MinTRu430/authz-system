@@ -1,0 +1,33 @@
+# HELP authz_fail_closed_total Total requests denied due to fail-closed mode (policy-server unavailable)
+# TYPE authz_fail_closed_total counter
+authz_fail_closed_total 1
+# HELP authz_policy_availability_state Policy-server availability state: 1 healthy, 0 unavailable
+# TYPE authz_policy_availability_state gauge
+authz_policy_availability_state 1
+# HELP authz_policy_endpoint_availability_state Policy endpoint availability state: 1 healthy, 0 unavailable
+# TYPE authz_policy_endpoint_availability_state gauge
+authz_policy_endpoint_availability_state{endpoint="0"} 1
+authz_policy_endpoint_availability_state{endpoint="1"} 1
+authz_policy_endpoint_availability_state{endpoint="2"} 1
+# HELP authz_policy_endpoint_health_total Policy endpoint health checks
+# TYPE authz_policy_endpoint_health_total counter
+authz_policy_endpoint_health_total{endpoint="0",result="ok"} 52
+authz_policy_endpoint_health_total{endpoint="1",result="ok"} 69
+authz_policy_endpoint_health_total{endpoint="2",result="ok"} 74
+# HELP authz_policy_endpoint_requests_total Policy endpoint check requests
+# TYPE authz_policy_endpoint_requests_total counter
+authz_policy_endpoint_requests_total{endpoint="0",result="allow"} 71
+authz_policy_endpoint_requests_total{endpoint="0",result="deny"} 2
+authz_policy_endpoint_requests_total{endpoint="0",result="unavailable"} 3
+authz_policy_endpoint_requests_total{endpoint="1",result="allow"} 63
+authz_policy_endpoint_requests_total{endpoint="1",result="deny"} 4
+authz_policy_endpoint_requests_total{endpoint="1",result="unavailable"} 3
+authz_policy_endpoint_requests_total{endpoint="2",result="allow"} 65
+authz_policy_endpoint_requests_total{endpoint="2",result="deny"} 3
+authz_policy_endpoint_requests_total{endpoint="2",result="unavailable"} 2
+# HELP authz_policy_failover_total Policy endpoint failover attempts
+# TYPE authz_policy_failover_total counter
+authz_policy_failover_total 7
+# HELP authz_policy_health_checks_total Application-level policy-server health checks
+# TYPE authz_policy_health_checks_total counter
+authz_policy_health_checks_total{result="ok"} 195

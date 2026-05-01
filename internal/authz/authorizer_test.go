@@ -70,8 +70,13 @@ func TestAuthorizerFailClosedOnAllowCacheHitWhenPolicyServerUnavailable(t *testi
 		RuleID: "R_ALLOW",
 	})
 
-	a := newTestAuthorizer("http://127.0.0.1:1", false, time.Minute, transport)
-	a.probeTimeout = 25 * time.Millisecond
+	a := newTestAuthorizer("http://policy.test", false, time.Minute, transport)
+	a.healthTimeout = 25 * time.Millisecond
+	client := testPolicyClient(t, a)
+	client.healthPositiveTTL = 50 * time.Millisecond
+	base := time.Unix(100, 0)
+	now := base
+	client.now = func() time.Time { return now }
 	req := NewAuthzRequest("orders", "payments", TransportHTTP, "POST", "/payments/charge")
 
 	resp, err := a.Authorize(context.Background(), req)
@@ -85,6 +90,8 @@ func TestAuthorizerFailClosedOnAllowCacheHitWhenPolicyServerUnavailable(t *testi
 		t.Fatalf("policy checks = %d, want 1 before cache hit", got)
 	}
 
+	transport.healthStatus = http.StatusServiceUnavailable
+	now = base.Add(100 * time.Millisecond)
 	resp, err = a.Authorize(context.Background(), req)
 	if !errors.Is(err, ErrFailClosed) {
 		t.Fatalf("cache-hit err = %v, want ErrFailClosed", err)
@@ -95,16 +102,52 @@ func TestAuthorizerFailClosedOnAllowCacheHitWhenPolicyServerUnavailable(t *testi
 	if got := transport.calls.Load(); got != 1 {
 		t.Fatalf("policy checks = %d, want no second /v1/check call on cache hit", got)
 	}
+	if got := transport.healthCalls.Load(); got != 1 {
+		t.Fatalf("health checks = %d, want 1 on allow cache hit", got)
+	}
 }
 
-func TestAuthorizerDenyCacheHitDoesNotRequirePolicyProbe(t *testing.T) {
+func TestAuthorizerAllowCacheHitUsesCachedHealthState(t *testing.T) {
+	transport := newPolicyRoundTripper(CheckResponse{
+		Allow:  true,
+		Reason: "matched allow rule",
+		RuleID: "R_ALLOW",
+	})
+
+	a := newTestAuthorizer("http://policy.test", false, time.Minute, transport)
+	testPolicyClient(t, a).healthPositiveTTL = time.Minute
+	req := NewAuthzRequest("orders", "payments", TransportHTTP, "POST", "/payments/charge")
+
+	if _, err := a.Authorize(context.Background(), req); err != nil {
+		t.Fatalf("first Authorize error = %v, want nil", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		resp, err := a.Authorize(context.Background(), req)
+		if err != nil {
+			t.Fatalf("cache-hit Authorize[%d] error = %v, want nil", i, err)
+		}
+		if !resp.Allow || resp.RuleID != "R_ALLOW" {
+			t.Fatalf("cache-hit response[%d] = %+v, want cached allow", i, resp)
+		}
+	}
+	if got := transport.calls.Load(); got != 1 {
+		t.Fatalf("policy checks = %d, want one /v1/check", got)
+	}
+	if got := transport.healthCalls.Load(); got != 1 {
+		t.Fatalf("health checks = %d, want one health call to seed cached healthy state", got)
+	}
+}
+
+func TestAuthorizerDenyCacheHitDoesNotRequirePolicyHealthCheck(t *testing.T) {
 	transport := newPolicyRoundTripper(CheckResponse{
 		Allow:  false,
 		Reason: "matched deny rule",
 		RuleID: "R_DENY",
 	})
+	transport.healthStatus = http.StatusServiceUnavailable
 
-	a := newTestAuthorizer("http://127.0.0.1:1", false, time.Minute, transport)
+	a := newTestAuthorizer("http://policy.test", false, time.Minute, transport)
 	req := NewAuthzRequest("orders", "payments", TransportHTTP, "POST", "/payments/refund")
 
 	_, err := a.Authorize(context.Background(), req)
@@ -125,16 +168,22 @@ func TestAuthorizerDenyCacheHitDoesNotRequirePolicyProbe(t *testing.T) {
 	if got := transport.calls.Load(); got != 1 {
 		t.Fatalf("policy checks = %d, want no second /v1/check call on deny cache hit", got)
 	}
+	if got := transport.healthCalls.Load(); got != 0 {
+		t.Fatalf("health checks = %d, want none on deny cache hit", got)
+	}
 }
 
 type policyRoundTripper struct {
-	decision CheckResponse
-	err      error
-	calls    atomic.Int64
+	decision     CheckResponse
+	err          error
+	healthStatus int
+	healthErr    error
+	calls        atomic.Int64
+	healthCalls  atomic.Int64
 }
 
 func newPolicyRoundTripper(decision CheckResponse) *policyRoundTripper {
-	return &policyRoundTripper{decision: decision}
+	return &policyRoundTripper{decision: decision, healthStatus: http.StatusOK}
 }
 
 func roundTripError(err error) *policyRoundTripper {
@@ -142,6 +191,18 @@ func roundTripError(err error) *policyRoundTripper {
 }
 
 func (rt *policyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && req.URL.Path == "/v1/health" {
+		rt.healthCalls.Add(1)
+		if rt.healthErr != nil {
+			return nil, rt.healthErr
+		}
+		status := rt.healthStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		return responseWithStatus(status, http.StatusText(status)), nil
+	}
+
 	rt.calls.Add(1)
 	if rt.err != nil {
 		return nil, rt.err
@@ -184,7 +245,7 @@ func newTestAuthorizer(policyURL string, failOpen bool, cacheTTL time.Duration, 
 	if cacheTTL > 0 {
 		cache = NewDecisionCache(cacheTTL)
 	}
-	return &Authorizer{
+	a := &Authorizer{
 		failOpen: failOpen,
 		client: &PolicyClient{
 			BaseURL: policyURL,
@@ -192,9 +253,20 @@ func newTestAuthorizer(policyURL string, failOpen bool, cacheTTL time.Duration, 
 				Timeout:   50 * time.Millisecond,
 				Transport: transport,
 			},
-			downFor: 10 * time.Millisecond,
+			downFor:           50 * time.Millisecond,
+			healthPositiveTTL: 50 * time.Millisecond,
 		},
-		cache:        cache,
-		probeTimeout: 25 * time.Millisecond,
+		cache:         cache,
+		healthTimeout: 25 * time.Millisecond,
 	}
+	return a
+}
+
+func testPolicyClient(t *testing.T, a *Authorizer) *PolicyClient {
+	t.Helper()
+	client, ok := a.client.(*PolicyClient)
+	if !ok {
+		t.Fatalf("authorizer client type = %T, want *PolicyClient", a.client)
+	}
+	return client
 }

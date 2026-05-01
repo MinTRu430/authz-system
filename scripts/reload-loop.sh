@@ -9,7 +9,7 @@ end=$(( $(date +%s) + DURATION ))
 echo "[*] Цикл перезагрузки политик: длительность=${DURATION}s интервал=${INTERVAL}s"
 
 while [ "$(date +%s)" -lt "$end" ]; do
-  make -C "$ROOT/deploy" reload >/dev/null
+  make -C "$ROOT/deploy" reload-all >/dev/null
   sleep "$INTERVAL"
 done
 

@@ -5,9 +5,11 @@ scrape_configs:
   - job_name: policy-server
     scheme: https
     tls_config:
-      insecure_skip_verify: true
+      ca_file: /etc/prometheus/certs/ca.pem
+      cert_file: /etc/prometheus/certs/orders.pem
+      key_file: /etc/prometheus/certs/orders-key.pem
     static_configs:
-      - targets: ["policy-server:8443"]
+      - targets: ["policy-server-1:8443", "policy-server-2:8443", "policy-server-3:8443"]
 
   - job_name: payments
     scheme: http

@@ -35,6 +35,8 @@ services:
       - |
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.requested --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payments.refund.forced --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic authz.dlq.payments.requested --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic authz.dlq.payments.refund.forced --partitions 1 --replication-factor 1
     networks: [authz-net]
 
   nats:
@@ -46,17 +48,17 @@ services:
       - "8222:8222"
     networks: [authz-net]
 
-  policy-server:
+  policy-server-1:
     build:
       context: ..
       dockerfile: policy-server/Dockerfile
-    container_name: policy-server
+    container_name: policy-server-1
     ports:
       - "8443:8443"
     volumes:
       - ../policies:/app/policies:ro
       - ../certs:/certs:ro
-      - policy-data:/data
+      - policy-data-1:/data
     environment:
       - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
@@ -64,6 +66,61 @@ services:
       - CA_FILE=/certs/ca.pem
       - ADMIN_TOKEN=dev-admin-token
       - AUDIT_FILE=/data/audit.log
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_SERVICE_NAME=policy-server-1
+      - OTEL_EXPORTER=${OTEL_EXPORTER:-stdout}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    networks:
+      authz-net:
+        aliases:
+          - policy-server
+
+  policy-server-2:
+    build:
+      context: ..
+      dockerfile: policy-server/Dockerfile
+    container_name: policy-server-2
+    ports:
+      - "8444:8443"
+    volumes:
+      - ../policies:/app/policies:ro
+      - ../certs:/certs:ro
+      - policy-data-2:/data
+    environment:
+      - POLICY_FILE=/app/policies/policies.yaml
+      - CERT_FILE=/certs/policy-server.pem
+      - KEY_FILE=/certs/policy-server-key.pem
+      - CA_FILE=/certs/ca.pem
+      - ADMIN_TOKEN=dev-admin-token
+      - AUDIT_FILE=/data/audit.log
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_SERVICE_NAME=policy-server-2
+      - OTEL_EXPORTER=${OTEL_EXPORTER:-stdout}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    networks: [authz-net]
+
+  policy-server-3:
+    build:
+      context: ..
+      dockerfile: policy-server/Dockerfile
+    container_name: policy-server-3
+    ports:
+      - "8445:8443"
+    volumes:
+      - ../policies:/app/policies:ro
+      - ../certs:/certs:ro
+      - policy-data-3:/data
+    environment:
+      - POLICY_FILE=/app/policies/policies.yaml
+      - CERT_FILE=/certs/policy-server.pem
+      - KEY_FILE=/certs/policy-server-key.pem
+      - CA_FILE=/certs/ca.pem
+      - ADMIN_TOKEN=dev-admin-token
+      - AUDIT_FILE=/data/audit.log
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_SERVICE_NAME=policy-server-3
+      - OTEL_EXPORTER=${OTEL_EXPORTER:-stdout}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     networks: [authz-net]
 
   payments:
@@ -72,7 +129,11 @@ services:
       dockerfile: services/payments/Dockerfile
     container_name: payments
     depends_on:
-      policy-server:
+      policy-server-1:
+        condition: service_started
+      policy-server-2:
+        condition: service_started
+      policy-server-3:
         condition: service_started
       kafka:
         condition: service_healthy
@@ -88,13 +149,29 @@ services:
       - ../certs:/certs:ro
     environment:
       - SERVICE_NAME=payments
-      - POLICY_URL=https://policy-server:8443
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_SERVICE_NAME=payments
+      - OTEL_EXPORTER=${OTEL_EXPORTER:-stdout}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - POLICY_URL=https://policy-server-1:8443
+      - POLICY_URLS=https://policy-server-1:8443,https://policy-server-2:8443,https://policy-server-3:8443
       - CERT_FILE=/certs/payments.pem
       - KEY_FILE=/certs/payments-key.pem
       - CA_FILE=/certs/ca.pem
       - POLICY_CERT_FILE=/certs/payments.pem
       - POLICY_KEY_FILE=/certs/payments-key.pem
       - POLICY_CA_FILE=/certs/ca.pem
+      - AUTHZ_MESSAGE_SIGNING_MODE=required
+      - AUTHZ_MESSAGE_SIGNING_SECRET=base64:cGF5bWVudHMtbWVzc2FnZS1zaWduaW5nLXNlY3JldA==
+      - AUTHZ_MESSAGE_VERIFICATION_SECRETS=orders=base64:b3JkZXJzLW1lc3NhZ2Utc2lnbmluZy1zZWNyZXQ=,payments=base64:cGF5bWVudHMtbWVzc2FnZS1zaWduaW5nLXNlY3JldA==
+      - AUTHZ_MESSAGE_MAX_AGE=5m
+      - AUTHZ_MESSAGE_FUTURE_SKEW=30s
+      - BROKER_DLQ_ENABLED=true
+      - BROKER_DLQ_PREFIX=authz.dlq
+      - BROKER_MAX_RETRIES=3
+      - BROKER_RETRY_BACKOFF=500ms
+      - BROKER_DEAD_LETTER_ON_DENY=true
+      - BROKER_DEAD_LETTER_ON_SIGNATURE_ERROR=true
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC_PAYMENT_REQUESTED=payments.requested
       - KAFKA_GROUP_ID=payments-demo
@@ -120,14 +197,30 @@ services:
       - ../certs:/certs:ro
     environment:
       - SERVICE_NAME=orders
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_SERVICE_NAME=orders
+      - OTEL_EXPORTER=${OTEL_EXPORTER:-stdout}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - CERT_FILE=/certs/orders.pem
       - KEY_FILE=/certs/orders-key.pem
       - CA_FILE=/certs/ca.pem
       - PAYMENTS_REST_URL=https://payments:8080
-      - POLICY_URL=https://policy-server:8443
+      - POLICY_URL=https://policy-server-1:8443
+      - POLICY_URLS=https://policy-server-1:8443,https://policy-server-2:8443,https://policy-server-3:8443
       - POLICY_CERT_FILE=/certs/orders.pem
       - POLICY_KEY_FILE=/certs/orders-key.pem
       - POLICY_CA_FILE=/certs/ca.pem
+      - AUTHZ_MESSAGE_SIGNING_MODE=required
+      - AUTHZ_MESSAGE_SIGNING_SECRET=base64:b3JkZXJzLW1lc3NhZ2Utc2lnbmluZy1zZWNyZXQ=
+      - AUTHZ_MESSAGE_VERIFICATION_SECRETS=orders=base64:b3JkZXJzLW1lc3NhZ2Utc2lnbmluZy1zZWNyZXQ=,payments=base64:cGF5bWVudHMtbWVzc2FnZS1zaWduaW5nLXNlY3JldA==
+      - AUTHZ_MESSAGE_MAX_AGE=5m
+      - AUTHZ_MESSAGE_FUTURE_SKEW=30s
+      - BROKER_DLQ_ENABLED=true
+      - BROKER_DLQ_PREFIX=authz.dlq
+      - BROKER_MAX_RETRIES=3
+      - BROKER_RETRY_BACKOFF=500ms
+      - BROKER_DEAD_LETTER_ON_DENY=true
+      - BROKER_DEAD_LETTER_ON_SIGNATURE_ERROR=true
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TARGET_SERVICE=payments
       - KAFKA_TOPIC_PAYMENT_REQUESTED=payments.requested
@@ -139,11 +232,13 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: prometheus
+    user: "0:0"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../certs:/etc/prometheus/certs:ro
     ports:
       - "9091:9090"
-    depends_on: [policy-server, payments]
+    depends_on: [policy-server-1, policy-server-2, policy-server-3, payments]
     networks: [authz-net]
 
   grafana:
@@ -159,4 +254,6 @@ networks:
     driver: bridge
 
 volumes:
-  policy-data:
+  policy-data-1:
+  policy-data-2:
+  policy-data-3:

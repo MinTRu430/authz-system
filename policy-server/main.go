@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,20 +18,137 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
 	"gopkg.in/yaml.v3"
 )
 
 type Store struct {
 	mu      sync.RWMutex
-	rules   []authz.PolicyRule
+	policy  *authz.CompiledPolicy
 	version string
 }
 
-func (s *Store) Decide(req authz.AuthzRequest) authz.CheckResponse {
+func (s *Store) Decide(ctx context.Context, req authz.AuthzRequest) authz.CheckResponse {
+	s.mu.RLock()
+	policy := s.policy
+	version := s.version
+	stats := authz.PolicyIndexStats{}
+	if policy != nil {
+		stats = policy.Stats()
+	}
+	s.mu.RUnlock()
+
+	ctx, span := authz.StartSpan(ctx, "policy_server.match",
+		attribute.Int("policy.rules_count", stats.Rules),
+		attribute.Int("policy.index_buckets", stats.Buckets),
+	)
+	defer span.End()
+
+	start := time.Now()
+	resp := policy.Decide(version, req)
+	policyMatchLatency.Observe(time.Since(start).Seconds())
+	if resp.Allow {
+		authz.EndSpanWithResult(span, "allow", nil)
+		span.SetAttributes(attribute.String("policy.result", "allow"))
+	} else {
+		authz.EndSpanWithResult(span, "deny", nil)
+		span.SetAttributes(attribute.String("policy.result", "deny"))
+	}
+	return resp
+}
+
+func (s *Store) healthState() (bool, string, authz.PolicyIndexStats) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return authz.DecidePolicy(s.rules, s.version, req)
+	if s.policy == nil || s.version == "" {
+		return false, s.version, authz.PolicyIndexStats{}
+	}
+	return true, s.version, s.policy.Stats()
+}
+
+func (s *Store) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := authz.ExtractHTTP(r.Context(), r.Header)
+	_, span := authz.StartSpan(ctx, "policy_server.health")
+	defer span.End()
+
+	if r.Method != http.MethodGet {
+		authz.EndSpanWithResult(span, "error", nil)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ready, version, stats := s.healthState()
+	span.SetAttributes(
+		attribute.Int("policy.rules_count", stats.Rules),
+		attribute.Int("policy.index_buckets", stats.Buckets),
+	)
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		span.SetAttributes(attribute.String("policy.result", "unhealthy"))
+		authz.EndSpanWithResult(span, "unhealthy", nil)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":  "unhealthy",
+			"version": version,
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"version": version,
+		"rules":   stats.Rules,
+		"buckets": stats.Buckets,
+	})
+	span.SetAttributes(attribute.String("policy.result", "ok"))
+	authz.EndSpanWithResult(span, "ok", nil)
+}
+
+func (s *Store) CheckHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := authz.ExtractHTTP(r.Context(), r.Header)
+	ctx, span := authz.StartSpan(ctx, "policy_server.check")
+	defer span.End()
+
+	start := time.Now()
+	result := "error"
+	var spanErr error
+	defer func() {
+		policyCheckRequestsTotal.WithLabelValues(result).Inc()
+		policyCheckDuration.Observe(time.Since(start).Seconds())
+		span.SetAttributes(attribute.String("policy.result", result))
+		authz.EndSpanWithResult(span, result, spanErr)
+	}()
+	defer r.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		spanErr = err
+		decisionTotal.WithLabelValues("error").Inc()
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
+
+	var req authz.AuthzRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		spanErr = err
+		decisionTotal.WithLabelValues("error").Inc()
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	resp := s.Decide(ctx, req)
+
+	if resp.Allow {
+		result = "allow"
+		decisionTotal.WithLabelValues("allow").Inc()
+	} else {
+		result = "deny"
+		decisionTotal.WithLabelValues("deny").Inc()
+	}
+	decisionLatency.Observe(time.Since(start).Seconds())
+
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func computeVersion(data []byte) string {
@@ -39,7 +157,7 @@ func computeVersion(data []byte) string {
 	return short + "-" + time.Now().Format("20060102T150405")
 }
 
-func loadRulesFromFile(path string) ([]authz.PolicyRule, string, error) {
+func loadRulesFromFile(path string) (*authz.CompiledPolicy, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
@@ -48,18 +166,46 @@ func loadRulesFromFile(path string) ([]authz.PolicyRule, string, error) {
 	if err := yaml.Unmarshal(data, &rules); err != nil {
 		return nil, "", err
 	}
-	return authz.NormalizePolicyRules(rules), computeVersion(data), nil
+	return authz.CompilePolicyRules(rules), computeVersion(data), nil
 }
 
 func (s *Store) ReloadFromFile(path string) error {
-	rules, ver, err := loadRulesFromFile(path)
+	return s.ReloadFromFileContext(context.Background(), path)
+}
+
+func (s *Store) ReloadFromFileContext(ctx context.Context, path string) error {
+	ctx, span := authz.StartSpan(ctx, "policy_server.reload")
+	_ = ctx
+	start := time.Now()
+	result := "error"
+	var spanErr error
+	defer func() {
+		policyReloadTotal.WithLabelValues(result).Inc()
+		policyReloadDuration.Observe(time.Since(start).Seconds())
+		span.SetAttributes(attribute.String("policy.reload_result", result))
+		authz.EndSpanWithResult(span, result, spanErr)
+		span.End()
+	}()
+
+	policy, ver, err := loadRulesFromFile(path)
 	if err != nil {
+		spanErr = err
 		return err
 	}
+	stats := policy.Stats()
+
 	s.mu.Lock()
-	s.rules = rules
+	s.policy = policy
 	s.version = ver
 	s.mu.Unlock()
+
+	policyRulesTotal.Set(float64(stats.Rules))
+	policyIndexBucketsTotal.Set(float64(stats.Buckets))
+	span.SetAttributes(
+		attribute.Int("policy.rules_count", stats.Rules),
+		attribute.Int("policy.index_buckets", stats.Buckets),
+	)
+	result = "ok"
 	return nil
 }
 
@@ -144,7 +290,55 @@ var (
 	decisionLatency = prometheus.NewHistogram(
 		prometheus.HistogramOpts{Name: "policy_decision_latency_seconds", Help: "Decision latency seconds"},
 	)
+	policyRulesTotal = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "policy_rules_total", Help: "Number of active policy rules"},
+	)
+	policyIndexBucketsTotal = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "policy_index_buckets_total", Help: "Number of active policy index buckets"},
+	)
+	policyMatchLatency = prometheus.NewHistogram(
+		prometheus.HistogramOpts{Name: "policy_match_latency_seconds", Help: "Policy matching latency seconds"},
+	)
+	policyReloadTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "policy_reload_total", Help: "Policy reload attempts"},
+		[]string{"result"},
+	)
+	policyReloadDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{Name: "policy_reload_duration_seconds", Help: "Policy reload duration seconds"},
+	)
+	policyCheckRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "policy_check_requests_total", Help: "Policy check HTTP requests"},
+		[]string{"result"},
+	)
+	policyCheckDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{Name: "policy_check_duration_seconds", Help: "Policy check HTTP request duration seconds"},
+	)
 )
+
+func registerPolicyMetrics(reg prometheus.Registerer) {
+	reg.MustRegister(
+		decisionTotal,
+		decisionLatency,
+		policyRulesTotal,
+		policyIndexBucketsTotal,
+		policyMatchLatency,
+		policyReloadTotal,
+		policyReloadDuration,
+		policyCheckRequestsTotal,
+		policyCheckDuration,
+	)
+	initPolicyMetricSeries()
+}
+
+func initPolicyMetricSeries() {
+	for _, result := range []string{"allow", "deny", "error"} {
+		decisionTotal.WithLabelValues(result)
+		policyCheckRequestsTotal.WithLabelValues(result)
+	}
+	for _, result := range []string{"ok", "error"} {
+		policyReloadTotal.WithLabelValues(result)
+	}
+}
 
 func main() {
 	policyFile := os.Getenv("POLICY_FILE")
@@ -158,7 +352,17 @@ func main() {
 		log.Fatal("POLICY_FILE, CERT_FILE, KEY_FILE, CA_FILE are required")
 	}
 
-	prometheus.MustRegister(decisionTotal, decisionLatency)
+	shutdownTracing, err := authz.InitTracingFromEnv(context.Background(), "policy-server")
+	if err != nil {
+		log.Fatalf("init tracing: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
+
+	registerPolicyMetrics(prometheus.DefaultRegisterer)
 
 	store := &Store{}
 	if err := store.ReloadFromFile(policyFile); err != nil {
@@ -168,6 +372,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/v1/health", store.HealthHandler)
 	mux.Handle("/metrics", promhttp.Handler())
 
 	mux.HandleFunc("/v1/policies/version", func(w http.ResponseWriter, _ *http.Request) {
@@ -195,7 +400,7 @@ func main() {
 			Status:    "error",
 		}
 
-		if err := store.ReloadFromFile(policyFile); err != nil {
+		if err := store.ReloadFromFileContext(r.Context(), policyFile); err != nil {
 			ev.Error = err.Error()
 			appendAudit(auditFile, ev)
 			http.Error(w, "reload failed: "+err.Error(), http.StatusInternalServerError)
@@ -227,35 +432,7 @@ func main() {
 		_, _ = w.Write(b)
 	})
 
-	mux.HandleFunc("/v1/check", func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		defer r.Body.Close()
-
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			decisionTotal.WithLabelValues("error").Inc()
-			http.Error(w, "read error", http.StatusBadRequest)
-			return
-		}
-
-		var req authz.AuthzRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			decisionTotal.WithLabelValues("error").Inc()
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		resp := store.Decide(req)
-
-		if resp.Allow {
-			decisionTotal.WithLabelValues("allow").Inc()
-		} else {
-			decisionTotal.WithLabelValues("deny").Inc()
-		}
-		decisionLatency.Observe(time.Since(start).Seconds())
-
-		_ = json.NewEncoder(w).Encode(resp)
-	})
+	mux.HandleFunc("/v1/check", store.CheckHandler)
 
 	srv := &http.Server{
 		Addr:      ":8443",

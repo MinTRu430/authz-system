@@ -15,13 +15,17 @@ import (
 
 	paymentsv1 "authz-system/api"
 	"authz-system/internal/authz"
+	"authz-system/internal/authz/brokersign"
 	"authz-system/internal/authz/kafkaadapter"
 	"authz-system/internal/authz/natsadapter"
 
 	"github.com/nats-io/nats.go"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -54,6 +58,18 @@ func envDefault(k, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func durationEnvDefault(k string, fallback time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Fatalf("invalid duration env %s=%q: %v", k, v, err)
+	}
+	return d
 }
 
 func mustClientTLSConfig(certFile, keyFile, caFile, serverName string) *tls.Config {
@@ -106,22 +122,32 @@ func callREST(cmd string) {
 	}
 
 	baseURL := strings.TrimRight(envDefault("PAYMENTS_REST_URL", "https://payments:8080"), "/")
-	req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader([]byte("{}")))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx, span := authz.StartSpan(ctx, "transport.http.client", attribute.String("http.method", http.MethodPost))
+	defer span.End()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader([]byte("{}")))
 	if err != nil {
+		authz.EndSpanWithResult(span, "error", err)
 		log.Fatalf("%s request error: %v", label, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	authz.InjectHTTP(ctx, req.Header)
 
 	resp, err := client.Do(req)
 	if err != nil {
+		authz.EndSpanWithResult(span, "error", err)
 		log.Fatalf("%s error: %v", label, err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		authz.EndSpanWithResult(span, "deny", nil)
 		log.Fatalf("%s error: status=%d body=%s", label, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	authz.EndSpanWithResult(span, "allow", nil)
 	fmt.Printf("%s OK: %s\n", label, strings.TrimSpace(string(body)))
 }
 
@@ -137,14 +163,25 @@ func splitCSV(v string) []string {
 	return out
 }
 
+func policyEndpointConfig() (string, []string) {
+	policyURL := os.Getenv("POLICY_URL")
+	policyURLs := splitCSV(os.Getenv("POLICY_URLS"))
+	if policyURL == "" && len(policyURLs) == 0 {
+		log.Fatal("missing env POLICY_URL or POLICY_URLS")
+	}
+	return policyURL, policyURLs
+}
+
 func kafkaAuthzConfig() authz.Config {
 	certFile := mustEnv("CERT_FILE")
 	keyFile := mustEnv("KEY_FILE")
 	caFile := mustEnv("CA_FILE")
+	policyURL, policyURLs := policyEndpointConfig()
 
 	return authz.Config{
 		TargetService: envDefault("KAFKA_TARGET_SERVICE", kafkaDefaultTarget),
-		PolicyURL:     mustEnv("POLICY_URL"),
+		PolicyURL:     policyURL,
+		PolicyURLs:    policyURLs,
 		FailOpen:      false,
 		Timeout:       250 * time.Millisecond,
 		CacheTTL:      2 * time.Second,
@@ -153,6 +190,11 @@ func kafkaAuthzConfig() authz.Config {
 			KeyFile:  envDefault("POLICY_KEY_FILE", keyFile),
 			CAFile:   envDefault("POLICY_CA_FILE", caFile),
 		},
+		BrokerSigningMode:         envDefault("AUTHZ_MESSAGE_SIGNING_MODE", brokersign.ModeRequired),
+		BrokerSigningSecret:       os.Getenv("AUTHZ_MESSAGE_SIGNING_SECRET"),
+		BrokerVerificationSecrets: os.Getenv("AUTHZ_MESSAGE_VERIFICATION_SECRETS"),
+		BrokerMessageMaxAge:       durationEnvDefault("AUTHZ_MESSAGE_MAX_AGE", brokersign.DefaultMaxAge),
+		BrokerMessageFutureSkew:   durationEnvDefault("AUTHZ_MESSAGE_FUTURE_SKEW", brokersign.DefaultFutureSkew),
 	}
 }
 
@@ -160,10 +202,12 @@ func natsAuthzConfig() authz.Config {
 	certFile := mustEnv("CERT_FILE")
 	keyFile := mustEnv("KEY_FILE")
 	caFile := mustEnv("CA_FILE")
+	policyURL, policyURLs := policyEndpointConfig()
 
 	return authz.Config{
 		TargetService: envDefault("NATS_TARGET_SERVICE", natsDefaultTarget),
-		PolicyURL:     mustEnv("POLICY_URL"),
+		PolicyURL:     policyURL,
+		PolicyURLs:    policyURLs,
 		FailOpen:      false,
 		Timeout:       250 * time.Millisecond,
 		CacheTTL:      2 * time.Second,
@@ -172,12 +216,18 @@ func natsAuthzConfig() authz.Config {
 			KeyFile:  envDefault("POLICY_KEY_FILE", keyFile),
 			CAFile:   envDefault("POLICY_CA_FILE", caFile),
 		},
+		BrokerSigningMode:         envDefault("AUTHZ_MESSAGE_SIGNING_MODE", brokersign.ModeRequired),
+		BrokerSigningSecret:       os.Getenv("AUTHZ_MESSAGE_SIGNING_SECRET"),
+		BrokerVerificationSecrets: os.Getenv("AUTHZ_MESSAGE_VERIFICATION_SECRETS"),
+		BrokerMessageMaxAge:       durationEnvDefault("AUTHZ_MESSAGE_MAX_AGE", brokersign.DefaultMaxAge),
+		BrokerMessageFutureSkew:   durationEnvDefault("AUTHZ_MESSAGE_FUTURE_SKEW", brokersign.DefaultFutureSkew),
 	}
 }
 
 func callKafka(cmd string) {
 	var topic, messageType, label string
 	useAuthz := true
+	tamperSignature := false
 
 	switch cmd {
 	case "kafka-publish":
@@ -193,6 +243,12 @@ func callKafka(cmd string) {
 		messageType = kafkaRequestedType
 		label = "Kafka Raw Publish"
 		useAuthz = false
+	case "kafka-publish-invalid-signature":
+		topic = envDefault("KAFKA_TOPIC_PAYMENT_REQUESTED", kafkaRequestedTopic)
+		messageType = kafkaRequestedType
+		label = "Kafka Invalid Signature Publish"
+		useAuthz = false
+		tamperSignature = true
 	default:
 		log.Fatalf("unknown Kafka command %s", cmd)
 	}
@@ -224,10 +280,18 @@ func callKafka(cmd string) {
 			log.Fatalf("%s error: %v", label, err)
 		}
 	} else {
-		msg.Headers = []kafka.Header{
-			{Key: kafkaadapter.HeaderServiceName, Value: []byte(sourceService)},
-			{Key: kafkaadapter.HeaderMessageType, Value: []byte(messageType)},
+		adapter, err := kafkaadapter.New(kafkaAuthzConfig())
+		if err != nil {
+			log.Fatalf("%s adapter error: %v", label, err)
 		}
+		headers, err := adapter.SignHeaders(nil, topic, msg.Value, sourceService, messageType)
+		if err != nil {
+			log.Fatalf("%s signing error: %v", label, err)
+		}
+		if tamperSignature {
+			headers = tamperKafkaSignature(headers)
+		}
+		msg.Headers = headers
 		if err := writer.WriteMessages(ctx, msg); err != nil {
 			log.Fatalf("%s error: %v", label, err)
 		}
@@ -239,6 +303,7 @@ func callKafka(cmd string) {
 func callNATS(cmd string) {
 	var subject, messageType, label string
 	useAuthz := true
+	tamperSignature := false
 
 	switch cmd {
 	case "nats-publish":
@@ -254,6 +319,12 @@ func callNATS(cmd string) {
 		messageType = natsRequestedType
 		label = "NATS Raw Publish"
 		useAuthz = false
+	case "nats-publish-invalid-signature":
+		subject = envDefault("NATS_SUBJECT_PAYMENT_REQUESTED", natsRequestedSubject)
+		messageType = natsRequestedType
+		label = "NATS Invalid Signature Publish"
+		useAuthz = false
+		tamperSignature = true
 	default:
 		log.Fatalf("unknown NATS command %s", cmd)
 	}
@@ -279,13 +350,21 @@ func callNATS(cmd string) {
 			log.Fatalf("%s error: %v", label, err)
 		}
 	} else {
+		adapter, err := natsadapter.New(natsAuthzConfig())
+		if err != nil {
+			log.Fatalf("%s adapter error: %v", label, err)
+		}
+		headers, err := adapter.SignHeaders(nil, subject, payload, sourceService, messageType)
+		if err != nil {
+			log.Fatalf("%s signing error: %v", label, err)
+		}
+		if tamperSignature {
+			headers.Set(natsadapter.HeaderSignature, "invalid")
+		}
 		msg := &nats.Msg{
 			Subject: subject,
-			Header: nats.Header{
-				natsadapter.HeaderServiceName: []string{sourceService},
-				natsadapter.HeaderMessageType: []string{messageType},
-			},
-			Data: payload,
+			Header:  headers,
+			Data:    payload,
 		}
 		if err := conn.PublishMsg(msg); err != nil {
 			log.Fatalf("%s error: %v", label, err)
@@ -298,22 +377,42 @@ func callNATS(cmd string) {
 	fmt.Printf("%s OK: subject=%s message_type=%s\n", label, subject, messageType)
 }
 
+func tamperKafkaSignature(headers []kafka.Header) []kafka.Header {
+	for i := range headers {
+		if headers[i].Key == kafkaadapter.HeaderSignature {
+			headers[i].Value = []byte("invalid")
+			return headers
+		}
+	}
+	return append(headers, kafka.Header{Key: kafkaadapter.HeaderSignature, Value: []byte("invalid")})
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|nats-publish|nats-publish-deny|nats-publish-raw")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|kafka-publish-invalid-signature|nats-publish|nats-publish-deny|nats-publish-raw|nats-publish-invalid-signature")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
+
+	shutdownTracing, err := authz.InitTracingFromEnv(context.Background(), envDefault("SERVICE_NAME", "orders"))
+	if err != nil {
+		log.Fatalf("init tracing: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
 
 	if cmd == "rest-charge" || cmd == "rest-refund" {
 		callREST(cmd)
 		return
 	}
-	if cmd == "kafka-publish" || cmd == "kafka-publish-deny" || cmd == "kafka-publish-raw" {
+	if cmd == "kafka-publish" || cmd == "kafka-publish-deny" || cmd == "kafka-publish-raw" || cmd == "kafka-publish-invalid-signature" {
 		callKafka(cmd)
 		return
 	}
-	if cmd == "nats-publish" || cmd == "nats-publish-deny" || cmd == "nats-publish-raw" {
+	if cmd == "nats-publish" || cmd == "nats-publish-deny" || cmd == "nats-publish-raw" || cmd == "nats-publish-invalid-signature" {
 		callNATS(cmd)
 		return
 	}
@@ -334,22 +433,42 @@ func main() {
 	c := paymentsv1.NewPaymentsClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	ctx, span := authz.StartSpan(ctx, "transport.grpc.client", attribute.String("authz.transport", "grpc"))
+	defer span.End()
+	ctx = injectGRPCTraceContext(ctx)
 
 	switch cmd {
 	case "charge":
 		resp, err := c.Charge(ctx, &paymentsv1.ChargeRequest{OrderId: "o-1", Amount: 100})
 		if err != nil {
+			authz.EndSpanWithResult(span, "error", err)
 			log.Fatalf("Charge error: %v", err)
 		}
+		authz.EndSpanWithResult(span, "allow", nil)
 		fmt.Println("Charge OK:", resp.Status)
 	case "refund":
 		resp, err := c.Refund(ctx, &paymentsv1.RefundRequest{PaymentId: "p-1", Amount: 50})
 		if err != nil {
+			authz.EndSpanWithResult(span, "deny", nil)
 			log.Fatalf("Refund error: %v", err)
 		}
+		authz.EndSpanWithResult(span, "allow", nil)
 		fmt.Println("Refund OK:", resp.Status)
 	default:
-		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|nats-publish|nats-publish-deny|nats-publish-raw")
+		fmt.Println("usage: orders charge|refund|rest-charge|rest-refund|kafka-publish|kafka-publish-deny|kafka-publish-raw|kafka-publish-invalid-signature|nats-publish|nats-publish-deny|nats-publish-raw|nats-publish-invalid-signature")
 		os.Exit(2)
 	}
+}
+
+func injectGRPCTraceContext(ctx context.Context) context.Context {
+	carrier := propagation.MapCarrier{}
+	authz.InjectTextMap(ctx, carrier)
+	if len(carrier) == 0 {
+		return ctx
+	}
+	pairs := make([]string, 0, len(carrier)*2)
+	for key, value := range carrier {
+		pairs = append(pairs, key, value)
+	}
+	return metadata.NewOutgoingContext(ctx, metadata.Pairs(pairs...))
 }

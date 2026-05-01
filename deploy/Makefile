@@ -1,11 +1,16 @@
 DEPLOY_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ROOT_DIR := $(abspath $(DEPLOY_DIR)/..)
 COMPOSE := docker compose -f $(DEPLOY_DIR)/docker-compose.yml
+POLICY_SERVERS := policy-server-1 policy-server-2 policy-server-3
+FINAL_N ?= 200
+FINAL_C ?= 10
+FINAL_WARMUP ?= 20
 
 
-.PHONY: certs up down build restart logs status audit reload \
-	test test-grpc test-rest test-kafka test-nats test-all \
-	bench load load-deny load-matrix final-functional final-bench final-suite final-run \
+.PHONY: certs up down build restart logs status audit audit-all reload reload-all \
+	test test-grpc test-rest test-kafka test-nats test-dlq test-all \
+	bench load load-deny load-matrix final-functional final-bench final-suite final-hardening-functional final-hardening-bench final-hardening-suite final-run \
+	failover \
 	degrade-down degrade-up degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test degrade-all \
 	chaos-reload chaos-policy-flap
 
@@ -13,17 +18,17 @@ certs:
 	$(ROOT_DIR)/certs/generate-certs.sh
 
 up:
-	$(COMPOSE) up --build -d
+	$(COMPOSE) up --remove-orphans --build -d
 
 down:
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 
 build:
 	$(COMPOSE) build
 
 restart:
-	$(COMPOSE) down
-	$(COMPOSE) up --build -d
+	$(COMPOSE) down --remove-orphans
+	$(COMPOSE) up --remove-orphans --build -d
 
 logs:
 	$(COMPOSE) logs -f
@@ -76,26 +81,76 @@ test-nats:
 	@echo "=== ПРОВЕРКА NATS: запрещенная публикация принудительного возврата ==="
 	- docker exec orders /app/orders nats-publish-deny
 
+test-dlq:
+	@echo "=== ПРОВЕРКА DLQ Kafka: сообщение с неверной подписью должно попасть в DLQ ==="
+	docker exec orders /app/orders kafka-publish-invalid-signature
+	@deadline=$$(( $$(date +%s) + 30 )); \
+	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
+	  $(COMPOSE) logs --since=30s payments | grep -q "KAFKA DLQ OK:.*reason=invalid_signature" && exit 0; \
+	  sleep 2; \
+	done; \
+	$(COMPOSE) logs --tail=200 payments; \
+	exit 1
+	@echo "=== ПРОВЕРКА DLQ NATS: сообщение с неверной подписью должно попасть в DLQ ==="
+	docker exec orders /app/orders nats-publish-invalid-signature
+	@deadline=$$(( $$(date +%s) + 30 )); \
+	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
+	  $(COMPOSE) logs --since=30s payments | grep -q "NATS DLQ OK:.*reason=invalid_signature" && exit 0; \
+	  sleep 2; \
+	done; \
+	$(COMPOSE) logs --tail=200 payments; \
+	exit 1
+
 test-all: test-grpc test-rest test-kafka test-nats
 
 status:
 	@echo "Prometheus: http://localhost:9091"
 	@echo "Grafana:    http://localhost:3000 (admin/admin)"
-	@echo "Метрики policy-server: https://localhost:8443/metrics"
+	@echo "Метрики policy-server-1: https://localhost:8443/metrics"
+	@echo "Метрики policy-server-2: https://localhost:8444/metrics"
+	@echo "Метрики policy-server-3: https://localhost:8445/metrics"
 	@echo "Метрики payments:      http://localhost:9090/metrics"
 	@echo "REST payments:         https://localhost:8080 (mTLS)"
 	@echo "Kafka:            kafka:9092 внутри сети Docker"
 	@echo "NATS:             nats://nats:4222 внутри сети Docker, наблюдение http://localhost:8222"
 
 reload:
-	@echo "=== Перезагрузка политик (администратор, mTLS) ==="
+	@echo "=== Перезагрузка политик policy-server-1 (администратор, mTLS) ==="
 	curl -k -X POST https://localhost:8443/v1/policies/reload \
 	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
 
+reload-all:
+	@echo "=== Перезагрузка политик на всех policy-server ==="
+	curl -k -X POST https://localhost:8443/v1/policies/reload \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
+	curl -k -X POST https://localhost:8444/v1/policies/reload \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
+	curl -k -X POST https://localhost:8445/v1/policies/reload \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
+
 audit:
-	@echo "=== Журнал аудита (администратор, mTLS) ==="
+	@echo "=== Журнал аудита policy-server-1 (администратор, mTLS) ==="
 	curl -k https://localhost:8443/v1/audit/tail \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" || true
+
+audit-all:
+	@echo "=== Журнал аудита policy-server-1 ==="
+	curl -k https://localhost:8443/v1/audit/tail \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" || true
+	@echo ""
+	@echo "=== Журнал аудита policy-server-2 ==="
+	curl -k https://localhost:8444/v1/audit/tail \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token" || true
+	@echo ""
+	@echo "=== Журнал аудита policy-server-3 ==="
+	curl -k https://localhost:8445/v1/audit/tail \
 	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" || true
 
@@ -113,6 +168,17 @@ final-bench:
 
 final-suite:
 	$(ROOT_DIR)/scripts/final-suite.sh
+
+
+final-hardening-functional:
+	RESULT_DIR=$(ROOT_DIR)/results/final-hardening/functional $(ROOT_DIR)/scripts/final-functional.sh
+
+
+final-hardening-bench:
+	RESULT_DIR=$(ROOT_DIR)/results/final-hardening/load FINAL_N=$(FINAL_N) FINAL_C=$(FINAL_C) FINAL_WARMUP=$(FINAL_WARMUP) $(ROOT_DIR)/scripts/final-bench.sh
+
+
+final-hardening-suite: final-hardening-functional final-hardening-bench
 
 
 final-run: restart test-all status
@@ -145,14 +211,63 @@ load-matrix:
 
 
 degrade-down:
-	@echo "=== Проверка отказа: остановка policy-server ==="
-	$(COMPOSE) stop policy-server
+	@echo "=== Проверка отказа: остановка всех policy-server ==="
+	$(COMPOSE) stop $(POLICY_SERVERS)
 
 degrade-up:
-	@echo "=== Проверка отказа: запуск policy-server ==="
-	$(COMPOSE) up -d policy-server
+	@echo "=== Проверка отказа: запуск всех policy-server ==="
+	$(COMPOSE) up -d $(POLICY_SERVERS)
 
 degrade-all: degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test
+
+failover:
+	@echo "=== Проверка failover между тремя policy-server ==="
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	docker exec orders /app/orders charge
+	@echo "[1] Остановить policy-server-1: запрос должен пройти через policy-server-2 или policy-server-3"
+	$(COMPOSE) stop policy-server-1
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[2] Остановить policy-server-2: запрос должен пройти через policy-server-3"
+	$(COMPOSE) stop policy-server-2
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[3] Восстановить policy-server-1 и policy-server-2, остановить policy-server-3"
+	$(COMPOSE) up -d policy-server-1 policy-server-2
+	@sleep 3
+	$(COMPOSE) stop policy-server-3
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[4] Остановить policy-server-1 и policy-server-2: запрос должен пройти через policy-server-3"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	$(COMPOSE) stop policy-server-1 policy-server-2
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[5] Остановить policy-server-1 и policy-server-3: запрос должен пройти через policy-server-2"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	$(COMPOSE) stop policy-server-1 policy-server-3
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[6] Остановить policy-server-2 и policy-server-3: запрос должен пройти через policy-server-1"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	$(COMPOSE) stop policy-server-2 policy-server-3
+	@sleep 1
+	docker exec orders /app/orders charge
+	@echo "[7] Остановить все policy-server: запрос должен быть запрещен"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	$(COMPOSE) stop $(POLICY_SERVERS)
+	@sleep 1
+	@if docker exec orders /app/orders charge; then echo "НЕОЖИДАННО: charge прошел при отказе всех policy-server"; exit 1; else echo "ОК: запрос запрещен при отказе всех policy-server"; fi
+	@echo "[8] Восстановить все policy-server"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
+	docker exec orders /app/orders charge
+	@echo "[+] Проверка failover для трех policy-server завершена"
 
 chaos-reload:
 	$(ROOT_DIR)/scripts/reload-loop.sh 60 2
@@ -165,15 +280,15 @@ degrade-test:
 	@echo "[1] Базовая проверка: policy-server доступен -> Charge должен пройти"
 	docker exec orders /app/orders charge
 	@echo
-	@echo "[2] Остановить policy-server -> Charge должен быть запрещен"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server -> Charge должен быть запрещен"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	@sleep 1
 	@echo "Вызов charge при недоступном policy-server..."
-	@docker exec orders /app/orders charge && (echo "НЕОЖИДАННО: charge прошел" && exit 1) || echo "ОК: запрос запрещен, как ожидалось"
+	@if docker exec orders /app/orders charge; then echo "НЕОЖИДАННО: charge прошел"; exit 1; else echo "ОК: запрос запрещен, как ожидалось"; fi
 	@echo
-	@echo "[3] Запустить policy-server -> Charge снова должен пройти"
-	$(COMPOSE) up -d policy-server
-	@sleep 1
+	@echo "[3] Запустить все policy-server -> Charge снова должен пройти"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
 	docker exec orders /app/orders charge
 	@echo
 	@echo "[+] Проверка отказа завершена"
@@ -184,15 +299,15 @@ degrade-rest-test:
 	@echo "[1] Базовая проверка: policy-server доступен -> REST charge должен пройти"
 	docker exec orders /app/orders rest-charge
 	@echo
-	@echo "[2] Остановить policy-server -> REST charge должен быть запрещен"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server -> REST charge должен быть запрещен"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	@sleep 1
 	@echo "Вызов REST charge при недоступном policy-server..."
-	@docker exec orders /app/orders rest-charge && (echo "НЕОЖИДАННО: REST charge прошел" && exit 1) || echo "ОК: запрос запрещен, как ожидалось"
+	@if docker exec orders /app/orders rest-charge; then echo "НЕОЖИДАННО: REST charge прошел"; exit 1; else echo "ОК: запрос запрещен, как ожидалось"; fi
 	@echo
-	@echo "[3] Запустить policy-server -> REST charge снова должен пройти"
-	$(COMPOSE) up -d policy-server
-	@sleep 1
+	@echo "[3] Запустить все policy-server -> REST charge снова должен пройти"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
+	@sleep 3
 	docker exec orders /app/orders rest-charge
 	@echo
 	@echo "[+] REST: проверка отказа завершена"
@@ -203,13 +318,13 @@ degrade-kafka-test:
 	@echo "[1] Базовая проверка: policy-server доступен -> публикация Kafka должна пройти"
 	docker exec orders /app/orders kafka-publish
 	@echo
-	@echo "[2] Остановить policy-server -> публикация Kafka должна быть запрещена"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server -> публикация Kafka должна быть запрещена"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	@sleep 1
-	@docker exec orders /app/orders kafka-publish && (echo "НЕОЖИДАННО: публикация Kafka прошла" && exit 1) || echo "ОК: запрос запрещен, как ожидалось"
+	@if docker exec orders /app/orders kafka-publish; then echo "НЕОЖИДАННО: публикация Kafka прошла"; exit 1; else echo "ОК: запрос запрещен, как ожидалось"; fi
 	@echo
-	@echo "[3] Запустить policy-server -> публикация Kafka снова должна пройти"
-	$(COMPOSE) up -d policy-server
+	@echo "[3] Запустить все policy-server -> публикация Kafka снова должна пройти"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@echo
@@ -222,14 +337,14 @@ degrade-kafka-consume-test:
 	$(COMPOSE) stop payments
 	docker exec orders /app/orders kafka-publish-raw
 	@echo
-	@echo "[2] Остановить policy-server и запустить payments -> обработка должна быть запрещена"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server и запустить payments -> обработка должна быть запрещена"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	docker start payments
 	@sleep 35
-	@$(COMPOSE) logs --since=45s payments | grep "KAFKA CONSUME DENY" && echo "ОК: обработка запрещена, как ожидалось" || (echo "НЕ НАЙДЕН: журнал запрета обработки Kafka" && exit 1)
+	@$(COMPOSE) logs --since=45s payments | grep "KAFKA DLQ OK:.*reason=policy_unavailable" && echo "ОК: обработка запрещена, как ожидалось" || (echo "НЕ НАЙДЕН: журнал DLQ для Kafka" && exit 1)
 	@echo
-	@echo "[3] Восстановить policy-server и проверить восстановление публикации и обработки Kafka"
-	$(COMPOSE) up -d policy-server
+	@echo "[3] Восстановить все policy-server и проверить восстановление публикации и обработки Kafka"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
 	@sleep 3
 	docker exec orders /app/orders kafka-publish
 	@sleep 10
@@ -243,13 +358,13 @@ degrade-nats-test:
 	@echo "[1] Базовая проверка: policy-server доступен -> публикация NATS должна пройти"
 	docker exec orders /app/orders nats-publish
 	@echo
-	@echo "[2] Остановить policy-server -> публикация NATS должна быть запрещена"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server -> публикация NATS должна быть запрещена"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	@sleep 1
-	@docker exec orders /app/orders nats-publish && (echo "НЕОЖИДАННО: публикация NATS прошла" && exit 1) || echo "ОК: запрос запрещен, как ожидалось"
+	@if docker exec orders /app/orders nats-publish; then echo "НЕОЖИДАННО: публикация NATS прошла"; exit 1; else echo "ОК: запрос запрещен, как ожидалось"; fi
 	@echo
-	@echo "[3] Запустить policy-server -> публикация NATS снова должна пройти"
-	$(COMPOSE) up -d policy-server
+	@echo "[3] Запустить все policy-server -> публикация NATS снова должна пройти"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@echo
@@ -263,15 +378,15 @@ degrade-nats-consume-test:
 	@sleep 2
 	$(COMPOSE) logs --since=20s payments | grep "NATS CONSUME OK"
 	@echo
-	@echo "[2] Остановить policy-server и отправить сообщение напрямую в NATS"
-	$(COMPOSE) stop policy-server
+	@echo "[2] Остановить все policy-server и отправить сообщение напрямую в NATS"
+	$(COMPOSE) stop $(POLICY_SERVERS)
 	@sleep 1
 	docker exec orders /app/orders nats-publish-raw
 	@sleep 3
-	@$(COMPOSE) logs --since=15s payments | grep "NATS CONSUME DENY" && echo "ОК: обработка запрещена, как ожидалось" || (echo "НЕ НАЙДЕН: журнал запрета обработки NATS" && exit 1)
+	@$(COMPOSE) logs --since=15s payments | grep "NATS DLQ OK:.*reason=policy_unavailable" && echo "ОК: обработка запрещена, как ожидалось" || (echo "НЕ НАЙДЕН: журнал DLQ для NATS" && exit 1)
 	@echo
-	@echo "[3] Восстановить policy-server и проверить восстановление публикации и обработки NATS"
-	$(COMPOSE) up -d policy-server
+	@echo "[3] Восстановить все policy-server и проверить восстановление публикации и обработки NATS"
+	$(COMPOSE) up -d $(POLICY_SERVERS)
 	@sleep 3
 	docker exec orders /app/orders nats-publish
 	@sleep 3

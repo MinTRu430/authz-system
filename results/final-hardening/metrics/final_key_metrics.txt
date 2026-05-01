@@ -1,0 +1,32 @@
+# HELP authz_broker_message_processing_total Broker message processing outcomes
+# TYPE authz_broker_message_processing_total counter
+authz_broker_message_processing_total{broker="kafka",result="deadlettered"} 2
+authz_broker_message_processing_total{broker="kafka",result="processed"} 1
+authz_broker_message_processing_total{broker="nats",result="deadlettered"} 2
+authz_broker_message_processing_total{broker="nats",result="processed"} 2
+# HELP authz_broker_messages_deadlettered_total Broker messages sent to dead-letter resources
+# TYPE authz_broker_messages_deadlettered_total counter
+authz_broker_messages_deadlettered_total{broker="kafka",reason="invalid_signature"} 1
+authz_broker_messages_deadlettered_total{broker="kafka",reason="policy_unavailable"} 1
+authz_broker_messages_deadlettered_total{broker="nats",reason="invalid_signature"} 1
+authz_broker_messages_deadlettered_total{broker="nats",reason="policy_unavailable"} 1
+# HELP authz_broker_messages_retried_total Broker message processing retries
+# TYPE authz_broker_messages_retried_total counter
+authz_broker_messages_retried_total{broker="kafka",reason="policy_unavailable"} 3
+authz_broker_messages_retried_total{broker="nats",reason="policy_unavailable"} 3
+# HELP authz_fail_closed_total Total requests denied due to fail-closed mode (policy-server unavailable)
+# TYPE authz_fail_closed_total counter
+authz_fail_closed_total 8
+# HELP authz_message_signature_checks_total Broker message signature verification checks
+# TYPE authz_message_signature_checks_total counter
+authz_message_signature_checks_total{broker="kafka",result="fail"} 1
+authz_message_signature_checks_total{broker="kafka",result="ok"} 5
+authz_message_signature_checks_total{broker="nats",result="fail"} 1
+authz_message_signature_checks_total{broker="nats",result="ok"} 6
+# HELP authz_message_signature_failures_total Broker message signature verification failures
+# TYPE authz_message_signature_failures_total counter
+authz_message_signature_failures_total{broker="kafka",reason="invalid_signature"} 1
+authz_message_signature_failures_total{broker="nats",reason="invalid_signature"} 1
+# HELP authz_policy_failover_total Policy endpoint failover attempts
+# TYPE authz_policy_failover_total counter
+authz_policy_failover_total 16

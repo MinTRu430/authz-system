@@ -88,7 +88,7 @@ set_rule_effect() {
 }
 
 reload_policies() {
-  run_case "reload" "policy" "reload" "success" "make -C '$ROOT/deploy' reload"
+  run_case "reload" "policy" "reload" "success" "make -C '$ROOT/deploy' reload-all"
 }
 
 wait_log_case() {
@@ -101,7 +101,7 @@ wait_log_case() {
 restore_policy() {
   if [[ -f "$POLICY_BACKUP" ]]; then
     cp "$POLICY_BACKUP" "$POLICY_FILE"
-    make -C "$ROOT/deploy" reload >/dev/null 2>&1 || true
+    make -C "$ROOT/deploy" reload-all >/dev/null 2>&1 || true
   fi
 }
 trap restore_policy EXIT
@@ -109,9 +109,11 @@ trap restore_policy EXIT
 snapshot() {
   local label="$1"
   curl -s http://localhost:9090/metrics > "$RESULT_DIR/payments_metrics_${label}.prom" || true
-  curl -sk https://localhost:8443/metrics > "$RESULT_DIR/policy_metrics_${label}.prom" || true
-  "${COMPOSE[@]}" logs --no-color --tail=400 payments policy-server orders kafka nats > "$RESULT_DIR/docker_${label}.log" 2>&1 || true
-  make -C "$ROOT/deploy" audit > "$RESULT_DIR/audit_${label}.log" 2>&1 || true
+  curl -sk https://localhost:8443/metrics > "$RESULT_DIR/policy_metrics_1_${label}.prom" || true
+  curl -sk https://localhost:8444/metrics > "$RESULT_DIR/policy_metrics_2_${label}.prom" || true
+  curl -sk https://localhost:8445/metrics > "$RESULT_DIR/policy_metrics_3_${label}.prom" || true
+  "${COMPOSE[@]}" logs --no-color --tail=400 payments policy-server-1 policy-server-2 policy-server-3 orders kafka nats > "$RESULT_DIR/docker_${label}.log" 2>&1 || true
+  make -C "$ROOT/deploy" audit-all > "$RESULT_DIR/audit_${label}.log" 2>&1 || true
 }
 
 reload_case() {
@@ -165,10 +167,10 @@ run_case "degrade" "nats" "consume_fail_closed" "success" "make -C '$ROOT/deploy
 snapshot "after"
 {
   echo "=== метрики авторизации payments ==="
-  grep -E 'authz_(checks_total|cache_total|fail_closed_total|policy_check_latency_seconds_(count|sum))' "$RESULT_DIR/payments_metrics_after.prom" || true
+  grep -E 'authz_(checks_total|protected_operations_total|cache_total|fail_closed_total|policy_check_latency_seconds_(count|sum)|policy_health_checks_total|policy_availability_state|policy_circuit_transitions_total|policy_failover_total|policy_endpoint_requests_total|policy_endpoint_health_total|policy_endpoint_availability_state|message_signed_total|message_signature_checks_total|message_signature_failures_total|broker_message_processing_total|broker_messages_retried_total|broker_messages_deadlettered_total|broker_dlq_publish_errors_total|broker_consume_errors_total)' "$RESULT_DIR/payments_metrics_after.prom" || true
   echo
   echo "=== метрики policy-server ==="
-  grep -E 'policy_' "$RESULT_DIR/policy_metrics_after.prom" || true
+  grep -E 'policy_' "$RESULT_DIR"/policy_metrics_*_after.prom || true
 } > "$RESULT_DIR/metrics_summary.txt"
 
 log ""

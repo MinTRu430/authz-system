@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"authz-system/internal/authz"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func NewMiddleware(cfg authz.Config) func(http.Handler) http.Handler {
@@ -17,27 +19,38 @@ func NewMiddleware(cfg authz.Config) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := authz.ExtractHTTP(r.Context(), r.Header)
 			resource := NormalizeResource(r)
 			authReq := authz.NewAuthzRequest("", cfg.TargetService, authz.TransportHTTP, r.Method, resource)
+			ctx, span := authz.StartSpan(ctx, "transport.http.authorize", append(authz.SafeAuthzAttrs(authReq), attribute.String("http.method", r.Method))...)
+			defer span.End()
 
 			source, err := ExtractServiceIdentity(r)
 			if err != nil {
 				authz.RecordAuthzCheck("unauthenticated", authReq)
+				authz.EndSpanWithResult(span, "unauthenticated", err)
 				http.Error(w, "mtls identity error: "+err.Error(), http.StatusUnauthorized)
 				return
 			}
 			authReq.Source = source
 
-			if _, err := authorizer.Authorize(r.Context(), authReq); err != nil {
+			if _, err := authorizer.Authorize(ctx, authReq); err != nil {
 				if errors.Is(err, authz.ErrDenied) || errors.Is(err, authz.ErrFailClosed) {
+					spanErr := error(nil)
+					if errors.Is(err, authz.ErrFailClosed) {
+						spanErr = err
+					}
+					authz.EndSpanWithResult(span, "deny", spanErr)
 					http.Error(w, err.Error(), http.StatusForbidden)
 					return
 				}
+				authz.EndSpanWithResult(span, "error", err)
 				http.Error(w, "authz error: "+err.Error(), http.StatusForbidden)
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			authz.EndSpanWithResult(span, "allow", nil)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
