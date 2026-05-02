@@ -2,11 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -19,23 +18,38 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
-	"gopkg.in/yaml.v3"
 )
 
 type Store struct {
-	mu      sync.RWMutex
-	policy  *authz.CompiledPolicy
-	version string
+	mu          sync.RWMutex
+	policy      *authz.CompiledPolicy
+	version     string
+	contentHash string
+	loadedAt    time.Time
+	source      string
+	syncStatus  string
+	lastSyncAt  time.Time
+	syncError   string
+	stats       authz.PolicyIndexStats
+}
+
+type StoreInfo struct {
+	Ready       bool
+	Version     string
+	ContentHash string
+	LoadedAt    time.Time
+	Source      string
+	SyncStatus  string
+	LastSyncAt  time.Time
+	SyncError   string
+	Stats       authz.PolicyIndexStats
 }
 
 func (s *Store) Decide(ctx context.Context, req authz.AuthzRequest) authz.CheckResponse {
 	s.mu.RLock()
 	policy := s.policy
 	version := s.version
-	stats := authz.PolicyIndexStats{}
-	if policy != nil {
-		stats = policy.Stats()
-	}
+	stats := s.stats
 	s.mu.RUnlock()
 
 	ctx, span := authz.StartSpan(ctx, "policy_server.match",
@@ -45,6 +59,14 @@ func (s *Store) Decide(ctx context.Context, req authz.AuthzRequest) authz.CheckR
 	defer span.End()
 
 	start := time.Now()
+	if policy == nil {
+		policyMatchLatency.Observe(time.Since(start).Seconds())
+		resp := authz.CheckResponse{Allow: false, Reason: "no active policy", Version: version}
+		authz.EndSpanWithResult(span, "deny", nil)
+		span.SetAttributes(attribute.String("policy.result", "deny"))
+		return resp
+	}
+
 	resp := policy.Decide(version, req)
 	policyMatchLatency.Observe(time.Since(start).Seconds())
 	if resp.Allow {
@@ -57,14 +79,25 @@ func (s *Store) Decide(ctx context.Context, req authz.AuthzRequest) authz.CheckR
 	return resp
 }
 
-func (s *Store) healthState() (bool, string, authz.PolicyIndexStats) {
+func (s *Store) CurrentInfo() StoreInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.policy == nil || s.version == "" {
-		return false, s.version, authz.PolicyIndexStats{}
+	info := StoreInfo{
+		Ready:       s.policy != nil && s.version != "",
+		Version:     s.version,
+		ContentHash: s.contentHash,
+		LoadedAt:    s.loadedAt,
+		Source:      s.source,
+		SyncStatus:  s.syncStatus,
+		LastSyncAt:  s.lastSyncAt,
+		SyncError:   s.syncError,
+		Stats:       s.stats,
 	}
-	return true, s.version, s.policy.Stats()
+	if info.SyncStatus == "" {
+		info.SyncStatus = "unknown"
+	}
+	return info
 }
 
 func (s *Store) HealthHandler(w http.ResponseWriter, r *http.Request) {
@@ -78,28 +111,38 @@ func (s *Store) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ready, version, stats := s.healthState()
+	info := s.CurrentInfo()
 	span.SetAttributes(
-		attribute.Int("policy.rules_count", stats.Rules),
-		attribute.Int("policy.index_buckets", stats.Buckets),
+		attribute.Int("policy.rules_count", info.Stats.Rules),
+		attribute.Int("policy.index_buckets", info.Stats.Buckets),
 	)
 	w.Header().Set("Content-Type", "application/json")
-	if !ready {
+	if !info.Ready {
 		span.SetAttributes(attribute.String("policy.result", "unhealthy"))
 		authz.EndSpanWithResult(span, "unhealthy", nil)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":  "unhealthy",
-			"version": version,
+			"status":        "unhealthy",
+			"version":       info.Version,
+			"content_hash":  info.ContentHash,
+			"policy_source": info.Source,
+			"sync_status":   info.SyncStatus,
+			"last_sync_at":  formatOptionalTime(info.LastSyncAt),
+			"sync_error":    info.SyncError,
 		})
 		return
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":  "ok",
-		"version": version,
-		"rules":   stats.Rules,
-		"buckets": stats.Buckets,
+		"status":        "ok",
+		"version":       info.Version,
+		"content_hash":  info.ContentHash,
+		"rules":         info.Stats.Rules,
+		"buckets":       info.Stats.Buckets,
+		"policy_source": info.Source,
+		"sync_status":   info.SyncStatus,
+		"last_sync_at":  formatOptionalTime(info.LastSyncAt),
+		"sync_error":    info.SyncError,
 	})
 	span.SetAttributes(attribute.String("policy.result", "ok"))
 	authz.EndSpanWithResult(span, "ok", nil)
@@ -151,29 +194,16 @@ func (s *Store) CheckHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func computeVersion(data []byte) string {
-	sum := sha256.Sum256(data)
-	short := hex.EncodeToString(sum[:])[:12]
-	return short + "-" + time.Now().Format("20060102T150405")
-}
-
-func loadRulesFromFile(path string) (*authz.CompiledPolicy, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", err
-	}
-	var rules []authz.PolicyRule
-	if err := yaml.Unmarshal(data, &rules); err != nil {
-		return nil, "", err
-	}
-	return authz.CompilePolicyRules(rules), computeVersion(data), nil
-}
-
 func (s *Store) ReloadFromFile(path string) error {
 	return s.ReloadFromFileContext(context.Background(), path)
 }
 
 func (s *Store) ReloadFromFileContext(ctx context.Context, path string) error {
+	_, err := s.ReloadFromSource(ctx, NewFilePolicySource(path), "file")
+	return err
+}
+
+func (s *Store) ReloadFromSource(ctx context.Context, source PolicySource, actor string) (PolicySnapshot, error) {
 	ctx, span := authz.StartSpan(ctx, "policy_server.reload")
 	_ = ctx
 	start := time.Now()
@@ -187,32 +217,129 @@ func (s *Store) ReloadFromFileContext(ctx context.Context, path string) error {
 		span.End()
 	}()
 
-	policy, ver, err := loadRulesFromFile(path)
+	snapshot, err := source.Reload(ctx, actor)
 	if err != nil {
 		spanErr = err
-		return err
+		return PolicySnapshot{}, err
 	}
-	stats := policy.Stats()
+	if err := s.ApplySnapshot(snapshot); err != nil {
+		spanErr = err
+		return PolicySnapshot{}, err
+	}
 
-	s.mu.Lock()
-	s.policy = policy
-	s.version = ver
-	s.mu.Unlock()
-
-	policyRulesTotal.Set(float64(stats.Rules))
-	policyIndexBucketsTotal.Set(float64(stats.Buckets))
+	stats := s.CurrentInfo().Stats
 	span.SetAttributes(
 		attribute.Int("policy.rules_count", stats.Rules),
 		attribute.Int("policy.index_buckets", stats.Buckets),
 	)
 	result = "ok"
+	return snapshot, nil
+}
+
+func (s *Store) LoadActiveFromSource(ctx context.Context, source PolicySource) (PolicySnapshot, error) {
+	snapshot, err := source.LoadActive(ctx)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	if err := s.ApplySnapshot(snapshot); err != nil {
+		return PolicySnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (s *Store) ApplySnapshot(snapshot PolicySnapshot) error {
+	if snapshot.Version == "" {
+		return errors.New("policy snapshot version is empty")
+	}
+	if snapshot.ContentHash == "" {
+		return errors.New("policy snapshot content hash is empty")
+	}
+
+	policy := authz.CompilePolicyRules(snapshot.Rules)
+	stats := policy.Stats()
+	loadedAt := snapshot.LoadedAt
+	if loadedAt.IsZero() {
+		loadedAt = time.Now().UTC()
+	}
+	source := snapshot.Source
+	if source == "" {
+		source = "unknown"
+	}
+	syncStatus := snapshot.SyncStatus
+	if syncStatus == "" {
+		syncStatus = syncStatusOK
+	}
+
+	s.mu.Lock()
+	s.policy = policy
+	s.version = snapshot.Version
+	s.contentHash = snapshot.ContentHash
+	s.loadedAt = loadedAt
+	s.source = source
+	s.syncStatus = syncStatus
+	s.lastSyncAt = time.Now().UTC()
+	s.syncError = ""
+	s.stats = stats
+	s.mu.Unlock()
+
+	policyRulesTotal.Set(float64(stats.Rules))
+	policyIndexBucketsTotal.Set(float64(stats.Buckets))
+	policyStoreLastSyncTimestampSeconds.Set(float64(s.CurrentInfo().LastSyncAt.Unix()))
+	policyReplicaInSync.Set(1)
 	return nil
+}
+
+func (s *Store) MarkSyncOK(source string) {
+	s.mu.Lock()
+	if source != "" {
+		s.source = source
+	}
+	s.syncStatus = syncStatusOK
+	s.lastSyncAt = time.Now().UTC()
+	s.syncError = ""
+	s.mu.Unlock()
+
+	policyStoreLastSyncTimestampSeconds.Set(float64(s.CurrentInfo().LastSyncAt.Unix()))
+	policyReplicaInSync.Set(1)
+}
+
+func (s *Store) MarkSyncStale(source string, err error) {
+	s.mu.Lock()
+	if source != "" {
+		s.source = source
+	}
+	if s.policy == nil || s.version == "" {
+		s.syncStatus = syncStatusMissing
+	} else {
+		s.syncStatus = syncStatusStale
+	}
+	s.lastSyncAt = time.Now().UTC()
+	if err != nil {
+		s.syncError = err.Error()
+	}
+	s.mu.Unlock()
+
+	policyStoreLastSyncTimestampSeconds.Set(float64(s.CurrentInfo().LastSyncAt.Unix()))
+	policyReplicaInSync.Set(0)
 }
 
 func (s *Store) Version() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.version
+}
+
+func (s *Store) ContentHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.contentHash
+}
+
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func mustTLSConfig(certFile, keyFile, caFile string) *tls.Config {
@@ -264,6 +391,9 @@ type AuditEvent struct {
 	UserAgent string `json:"user_agent"`
 	OldVer    string `json:"old_ver"`
 	NewVer    string `json:"new_ver"`
+	OldHash   string `json:"old_hash,omitempty"`
+	NewHash   string `json:"new_hash,omitempty"`
+	Source    string `json:"source,omitempty"`
 	Status    string `json:"status"`
 	Error     string `json:"error,omitempty"`
 }
@@ -313,6 +443,23 @@ var (
 	policyCheckDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{Name: "policy_check_duration_seconds", Help: "Policy check HTTP request duration seconds"},
 	)
+	policyStoreSyncTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "policy_store_sync_total", Help: "Policy store sync attempts"},
+		[]string{"result"},
+	)
+	policyStoreSyncDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{Name: "policy_store_sync_duration_seconds", Help: "Policy store sync duration seconds"},
+	)
+	policyStoreDBErrorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "policy_store_db_errors_total", Help: "Policy store database errors"},
+		[]string{"operation"},
+	)
+	policyStoreLastSyncTimestampSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "policy_store_last_sync_timestamp_seconds", Help: "Last policy store sync attempt timestamp"},
+	)
+	policyReplicaInSync = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "policy_replica_in_sync", Help: "Whether this policy-server replica is in sync with the active policy store version"},
+	)
 )
 
 func registerPolicyMetrics(reg prometheus.Registerer) {
@@ -326,6 +473,11 @@ func registerPolicyMetrics(reg prometheus.Registerer) {
 		policyReloadDuration,
 		policyCheckRequestsTotal,
 		policyCheckDuration,
+		policyStoreSyncTotal,
+		policyStoreSyncDuration,
+		policyStoreDBErrorsTotal,
+		policyStoreLastSyncTimestampSeconds,
+		policyReplicaInSync,
 	)
 	initPolicyMetricSeries()
 }
@@ -338,19 +490,42 @@ func initPolicyMetricSeries() {
 	for _, result := range []string{"ok", "error"} {
 		policyReloadTotal.WithLabelValues(result)
 	}
+	for _, result := range []string{"ok", "stale", "error"} {
+		policyStoreSyncTotal.WithLabelValues(result)
+	}
+	for _, operation := range []string{"load_active", "create", "activate", "rollback", "seed", "list"} {
+		policyStoreDBErrorsTotal.WithLabelValues(operation)
+	}
 }
 
 func main() {
 	policyFile := os.Getenv("POLICY_FILE")
+	policySourceName := os.Getenv("POLICY_SOURCE")
+	policyStoreDSN := os.Getenv("POLICY_STORE_DSN")
+	policyStoreSyncInterval, err := parseDurationEnv("POLICY_STORE_SYNC_INTERVAL", 2*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
 	certFile := os.Getenv("CERT_FILE")
 	keyFile := os.Getenv("KEY_FILE")
 	caFile := os.Getenv("CA_FILE")
 	adminToken := os.Getenv("ADMIN_TOKEN")
 	auditFile := os.Getenv("AUDIT_FILE")
 
-	if policyFile == "" || certFile == "" || keyFile == "" || caFile == "" {
-		log.Fatal("POLICY_FILE, CERT_FILE, KEY_FILE, CA_FILE are required")
+	if certFile == "" || keyFile == "" || caFile == "" {
+		log.Fatal("CERT_FILE, KEY_FILE, CA_FILE are required")
 	}
+	policyRuntime, err := NewPolicySourceRuntime(context.Background(), PolicySourceConfig{
+		Source:       policySourceName,
+		FilePath:     policyFile,
+		StoreDSN:     policyStoreDSN,
+		SyncInterval: policyStoreSyncInterval,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer policyRuntime.Close()
+	policySource := policyRuntime.Source
 
 	shutdownTracing, err := authz.InitTracingFromEnv(context.Background(), "policy-server")
 	if err != nil {
@@ -365,10 +540,20 @@ func main() {
 	registerPolicyMetrics(prometheus.DefaultRegisterer)
 
 	store := &Store{}
-	if err := store.ReloadFromFile(policyFile); err != nil {
-		log.Fatal(err)
+	if err := loadInitialPolicy(context.Background(), store, policySource); err != nil {
+		if policySource.Name() == policySourcePostgres {
+			log.Printf("initial policy load failed; server will start unhealthy until sync succeeds: %v", err)
+		} else {
+			log.Fatal(err)
+		}
 	}
-	log.Printf("Policy loaded. version=%s", store.Version())
+	if policySource.Name() == policySourcePostgres {
+		syncCtx, cancelSync := context.WithCancel(context.Background())
+		defer cancelSync()
+		go runPolicySyncLoop(syncCtx, store, policySource, policyRuntime.SyncInterval)
+	}
+	info := store.CurrentInfo()
+	log.Printf("Policy loaded. source=%s version=%s hash=%s", info.Source, info.Version, info.ContentHash)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -376,7 +561,15 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	mux.HandleFunc("/v1/policies/version", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"version": store.Version()})
+		info := store.CurrentInfo()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version":       info.Version,
+			"content_hash":  info.ContentHash,
+			"policy_source": info.Source,
+			"sync_status":   info.SyncStatus,
+			"last_sync_at":  formatOptionalTime(info.LastSyncAt),
+			"sync_error":    info.SyncError,
+		})
 	})
 
 	mux.HandleFunc("/v1/policies/reload", func(w http.ResponseWriter, r *http.Request) {
@@ -389,29 +582,49 @@ func main() {
 			return
 		}
 
-		old := store.Version()
+		old := store.CurrentInfo()
+		actor := actorFromRequest(r)
 		ev := AuditEvent{
 			Time:      time.Now().Format(time.RFC3339),
 			Action:    "reload",
-			Actor:     actorFromRequest(r),
+			Actor:     actor,
 			RemoteIP:  r.RemoteAddr,
 			UserAgent: r.UserAgent(),
-			OldVer:    old,
+			OldVer:    old.Version,
+			OldHash:   old.ContentHash,
+			Source:    policySource.Name(),
 			Status:    "error",
 		}
 
-		if err := store.ReloadFromFileContext(r.Context(), policyFile); err != nil {
+		snapshot, err := store.ReloadFromSource(r.Context(), policySource, actor)
+		if err != nil {
 			ev.Error = err.Error()
 			appendAudit(auditFile, ev)
 			http.Error(w, "reload failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		ev.NewVer = store.Version()
+		info := store.CurrentInfo()
+		ev.NewVer = snapshot.Version
+		ev.NewHash = snapshot.ContentHash
 		ev.Status = "ok"
 		appendAudit(auditFile, ev)
 
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": store.Version()})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":       "ok",
+			"version":      info.Version,
+			"content_hash": info.ContentHash,
+			"rules":        info.Stats.Rules,
+			"buckets":      info.Stats.Buckets,
+			"source":       info.Source,
+		})
+	})
+
+	mux.HandleFunc("/v1/policies/versions", func(w http.ResponseWriter, r *http.Request) {
+		handlePolicyVersions(w, r, policySource, store, adminToken)
+	})
+	mux.HandleFunc("/v1/policies/versions/", func(w http.ResponseWriter, r *http.Request) {
+		handlePolicyVersionAction(w, r, policySource, store, adminToken)
 	})
 
 	mux.HandleFunc("/v1/audit/tail", func(w http.ResponseWriter, r *http.Request) {

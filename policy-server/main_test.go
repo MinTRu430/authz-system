@@ -51,6 +51,11 @@ func TestHealthEndpointOKWhenPolicyLoaded(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), `"status":"ok"`) {
 		t.Fatalf("body = %s, want status ok", rr.Body.String())
 	}
+	for _, want := range []string{`"content_hash":`, `"policy_source":"file"`, `"sync_status":"ok"`} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("body = %s, want %s", rr.Body.String(), want)
+		}
+	}
 }
 
 func TestHealthEndpointUnavailableWithoutPolicy(t *testing.T) {
@@ -91,6 +96,11 @@ func TestPolicyServerMetricsRegister(t *testing.T) {
 		"policy_match_latency_seconds",
 		"policy_rules_total",
 		"policy_index_buckets_total",
+		"policy_store_sync_total",
+		"policy_store_sync_duration_seconds",
+		"policy_store_db_errors_total",
+		"policy_store_last_sync_timestamp_seconds",
+		"policy_replica_in_sync",
 	} {
 		if !names[name] {
 			t.Fatalf("metric %s was not registered", name)

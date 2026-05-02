@@ -48,11 +48,32 @@ services:
       - "8222:8222"
     networks: [authz-net]
 
+  policy-store:
+    image: postgres:16.6-alpine
+    container_name: policy-store
+    environment:
+      - POSTGRES_DB=authz
+      - POSTGRES_USER=authz
+      - POSTGRES_PASSWORD=authz
+    ports:
+      - "5432:5432"
+    volumes:
+      - policy-store-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authz -d authz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [authz-net]
+
   policy-server-1:
     build:
       context: ..
       dockerfile: policy-server/Dockerfile
     container_name: policy-server-1
+    depends_on:
+      policy-store:
+        condition: service_healthy
     ports:
       - "8443:8443"
     volumes:
@@ -60,6 +81,9 @@ services:
       - ../certs:/certs:ro
       - policy-data-1:/data
     environment:
+      - POLICY_SOURCE=postgres
+      - POLICY_STORE_DSN=postgres://authz:authz@policy-store:5432/authz?sslmode=disable
+      - POLICY_STORE_SYNC_INTERVAL=2s
       - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
       - KEY_FILE=/certs/policy-server-key.pem
@@ -80,6 +104,9 @@ services:
       context: ..
       dockerfile: policy-server/Dockerfile
     container_name: policy-server-2
+    depends_on:
+      policy-store:
+        condition: service_healthy
     ports:
       - "8444:8443"
     volumes:
@@ -87,6 +114,9 @@ services:
       - ../certs:/certs:ro
       - policy-data-2:/data
     environment:
+      - POLICY_SOURCE=postgres
+      - POLICY_STORE_DSN=postgres://authz:authz@policy-store:5432/authz?sslmode=disable
+      - POLICY_STORE_SYNC_INTERVAL=2s
       - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
       - KEY_FILE=/certs/policy-server-key.pem
@@ -104,6 +134,9 @@ services:
       context: ..
       dockerfile: policy-server/Dockerfile
     container_name: policy-server-3
+    depends_on:
+      policy-store:
+        condition: service_healthy
     ports:
       - "8445:8443"
     volumes:
@@ -111,6 +144,9 @@ services:
       - ../certs:/certs:ro
       - policy-data-3:/data
     environment:
+      - POLICY_SOURCE=postgres
+      - POLICY_STORE_DSN=postgres://authz:authz@policy-store:5432/authz?sslmode=disable
+      - POLICY_STORE_SYNC_INTERVAL=2s
       - POLICY_FILE=/app/policies/policies.yaml
       - CERT_FILE=/certs/policy-server.pem
       - KEY_FILE=/certs/policy-server-key.pem
@@ -254,6 +290,7 @@ networks:
     driver: bridge
 
 volumes:
+  policy-store-data:
   policy-data-1:
   policy-data-2:
   policy-data-3:

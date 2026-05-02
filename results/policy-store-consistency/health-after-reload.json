@@ -1,0 +1,5 @@
+{
+  "policy-server-1": {"buckets":10008,"content_hash":"ef957497983cab2aa6eceaa12e98879d25d3e10ff195dc27d1515973d3d91f96","last_sync_at":"2026-05-02T10:59:38Z","policy_source":"postgres","rules":10008,"status":"ok","sync_error":"","sync_status":"ok","version":"p3-ef957497983c"},
+  "policy-server-2": {"buckets":10008,"content_hash":"ef957497983cab2aa6eceaa12e98879d25d3e10ff195dc27d1515973d3d91f96","last_sync_at":"2026-05-02T10:59:38Z","policy_source":"postgres","rules":10008,"status":"ok","sync_error":"","sync_status":"ok","version":"p3-ef957497983c"},
+  "policy-server-3": {"buckets":10008,"content_hash":"ef957497983cab2aa6eceaa12e98879d25d3e10ff195dc27d1515973d3d91f96","last_sync_at":"2026-05-02T10:59:38Z","policy_source":"postgres","rules":10008,"status":"ok","sync_error":"","sync_status":"ok","version":"p3-ef957497983c"}
+}

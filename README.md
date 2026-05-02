@@ -24,7 +24,7 @@
 - `policy-server` - централизованная служба, которая загружает YAML-политики, предоставляет `/v1/check` и `/v1/health`, поддерживает перезагрузку политик, журнал аудита и метрики Prometheus.
 - `services/orders` - клиентская служба и командный интерфейс для gRPC, REST, Kafka и NATS вызовов.
 - `services/payments` - защищаемая служба со сценариями gRPC, REST, обработчиком Kafka и подписчиком NATS.
-- `deploy` - окружение Docker Compose с двумя экземплярами `policy-server`, службами, Kafka, NATS, Prometheus и Grafana.
+- `deploy` - окружение Docker Compose с тремя экземплярами `policy-server`, службами, Kafka, NATS, Prometheus и Grafana.
 - `scripts` - воспроизводимые сценарии функциональной проверки, отказов, хаоса и нагрузки.
 - `results` - сгенерированные экспериментальные артефакты и итоговые сводки.
 
@@ -222,6 +222,19 @@ POLICY_URL=https://policy-server-1:8443
 
 Если `POLICY_URLS` задан, он имеет приоритет. Клиент авторизации пробует следующий экземпляр, если текущий недоступен; если все экземпляры недоступны, сохраняется запрет при отказе.
 
+`policy-server` получает политики через источник, заданный переменной `POLICY_SOURCE`. В Docker Compose используется `POLICY_SOURCE=postgres`: все три экземпляра читают активную версию из `policy-store`, синхронизируются с интервалом `POLICY_STORE_SYNC_INTERVAL` и продолжают обслуживать последнюю успешно загруженную политику при временной недоступности PostgreSQL. Файловый режим `POLICY_SOURCE=file` сохранен для локальных проверок и использует детерминированную версию вида `file-<sha256-12>`.
+
+Основные переменные централизованного хранилища:
+
+```text
+POLICY_SOURCE=postgres
+POLICY_STORE_DSN=postgres://authz:authz@policy-store:5432/authz?sslmode=disable
+POLICY_STORE_SYNC_INTERVAL=2s
+POLICY_FILE=/app/policies/policies.yaml
+```
+
+Подробности режима file/postgres, startup seed, sync loop, rollback и last-known-good поведения описаны в `docs/policy-store.md`.
+
 ## Надежность обработки Kafka/NATS сообщений
 
 Для Kafka и NATS включена обработка проблемных сообщений через retry и dead-letter.
@@ -304,6 +317,19 @@ make -C deploy audit
 
 ```bash
 make -C deploy reload-all
+```
+
+В режиме PostgreSQL эта команда создает и активирует новую версию через один экземпляр `policy-server`, после чего остальные реплики подтягивают ее через цикл синхронизации. Посмотреть версии и состояние синхронизации:
+
+```bash
+make -C deploy policy-versions
+make -C deploy policy-sync-status
+```
+
+Откатить активную версию:
+
+```bash
+make -C deploy policy-rollback VERSION=p1-ef957497983c
 ```
 
 Прочитать аудит всех экземпляров:

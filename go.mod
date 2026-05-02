@@ -3,6 +3,7 @@ module authz-system
 go 1.24.0
 
 require (
+	github.com/lib/pq v1.10.9
 	github.com/nats-io/nats.go v1.49.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/segmentio/kafka-go v0.4.50

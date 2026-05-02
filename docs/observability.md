@@ -54,6 +54,13 @@
 - `policy_index_buckets_total` показывает число корзин индексированного сопоставления.
 - `policy_reload_total{result}` считает успешные и неуспешные перезагрузки политик.
 - `policy_reload_duration_seconds` измеряет длительность перезагрузки.
+- `policy_store_sync_total{result}` считает попытки синхронизации с централизованным хранилищем.
+- `policy_store_sync_duration_seconds` измеряет длительность синхронизации.
+- `policy_store_db_errors_total{operation}` считает ошибки обращения к PostgreSQL по типу операции.
+- `policy_store_last_sync_timestamp_seconds` показывает время последней попытки синхронизации.
+- `policy_replica_in_sync` показывает, находится ли реплика в синхронизированном состоянии.
+
+В нормальном состоянии `policy_replica_in_sync` должен быть равен `1` на каждой реплике. При временной недоступности PostgreSQL реплика продолжает обслуживать last-known-good policy, но `policy_replica_in_sync` переходит в `0`, а `policy_store_sync_total{result="stale"}` и `policy_store_db_errors_total{operation="load_active"}` растут.
 
 Для оценки индекса полезно сравнивать `policy_check_duration_seconds` и `policy_match_latency_seconds`: первая метрика включает HTTP, разбор запроса и кодирование ответа, вторая отражает только поиск правила.
 

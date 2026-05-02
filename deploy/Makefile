@@ -8,6 +8,7 @@ FINAL_WARMUP ?= 20
 
 
 .PHONY: certs up down build restart logs status audit audit-all reload reload-all \
+	policy-versions policy-activate policy-rollback policy-sync-status \
 	test test-grpc test-rest test-kafka test-nats test-dlq test-all \
 	bench load load-deny load-matrix final-functional final-bench final-suite final-hardening-functional final-hardening-bench final-hardening-suite final-run \
 	failover \
@@ -121,16 +122,41 @@ reload:
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
 
 reload-all:
-	@echo "=== Перезагрузка политик на всех policy-server ==="
-	curl -k -X POST https://localhost:8443/v1/policies/reload \
+	@echo "=== Перезагрузка политик через централизованное хранилище ==="
+	$(MAKE) reload
+	@sleep 3
+	$(MAKE) policy-sync-status
+
+policy-sync-status:
+	@echo "=== Состояние синхронизации policy-server ==="
+	@for port in 8443 8444 8445; do \
+	  echo "policy-server на порту $$port"; \
+	  curl -sk https://localhost:$$port/v1/health \
+	    --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem; \
+	  echo ""; \
+	done
+
+policy-versions:
+	@echo "=== Версии политик в централизованном хранилище ==="
+	curl -k https://localhost:8443/v1/policies/versions \
+	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
+	  -H "X-Admin-Token: dev-admin-token"
+
+policy-activate:
+	@test -n "$(VERSION)" || (echo "Укажите VERSION=<version>"; exit 1)
+	curl -k -X POST https://localhost:8443/v1/policies/versions/$(VERSION)/activate \
 	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
-	curl -k -X POST https://localhost:8444/v1/policies/reload \
+	@sleep 3
+	$(MAKE) policy-sync-status
+
+policy-rollback:
+	@test -n "$(VERSION)" || (echo "Укажите VERSION=<version>"; exit 1)
+	curl -k -X POST https://localhost:8443/v1/policies/versions/$(VERSION)/rollback \
 	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
 	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
-	curl -k -X POST https://localhost:8445/v1/policies/reload \
-	  --cert $(ROOT_DIR)/certs/orders.pem --key $(ROOT_DIR)/certs/orders-key.pem --cacert $(ROOT_DIR)/certs/ca.pem \
-	  -H "X-Admin-Token: dev-admin-token" -H "X-Actor: student"
+	@sleep 3
+	$(MAKE) policy-sync-status
 
 audit:
 	@echo "=== Журнал аудита policy-server-1 (администратор, mTLS) ==="
