@@ -15,6 +15,7 @@ TIMEOUT="${BROKER_STRESS_TIMEOUT:-15s}"
 
 SUMMARY="$RESULT_DIR/summary.md"
 MAIN_LOG="$RESULT_DIR/run.log"
+FAILED_CASES=0
 
 mkdir -p "$RESULT_DIR"
 
@@ -81,12 +82,14 @@ run_case() {
 
   if [[ ! -s "$json_file" ]]; then
     log "ОШИБКА: $name не сформировал JSON"
-    return 1
+    FAILED_CASES=$((FAILED_CASES + 1))
+    return 0
   fi
   if [[ "$rc" -ne 0 ]]; then
     log "ОШИБКА: $name завершился с кодом $rc"
-    return "$rc"
+    FAILED_CASES=$((FAILED_CASES + 1))
   fi
+  return 0
 }
 
 log "[*] Каталог результатов: $RESULT_DIR"
@@ -146,3 +149,7 @@ log ""
 log "[+] Нагрузочные испытания завершены"
 log "[+] Краткий отчёт: $SUMMARY"
 log "[+] JSON-файлы: $RESULT_DIR/*.json"
+if [[ "$FAILED_CASES" -gt 0 ]]; then
+  log "[!] Сценарии с несовпадением ожиданий: $FAILED_CASES"
+  exit 1
+fi

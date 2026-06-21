@@ -1,0 +1,14 @@
+{
+  "latency_p95_ms": [
+    {"scenario": "Kafka publish", "p95": 6.068},
+    {"scenario": "NATS publish", "p95": 5.381},
+    {"scenario": "Kafka e2e", "p95": 11.214},
+    {"scenario": "NATS e2e", "p95": 11.866}
+  ],
+  "throughput_msg_s": [
+    {"scenario": "Kafka publish", "throughput": 32284.9},
+    {"scenario": "NATS publish", "throughput": 30179.1},
+    {"scenario": "Kafka e2e", "throughput": 15072.5},
+    {"scenario": "NATS e2e", "throughput": 15267.1}
+  ]
+}
