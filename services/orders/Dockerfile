@@ -8,9 +8,11 @@ COPY . .
 
 RUN go build -o /out/orders ./services/orders
 RUN go build -o /out/transportbench ./cmd/transportbench
+RUN go build -o /out/brokerstress ./cmd/brokerstress
 
 FROM alpine:3.22.2
 WORKDIR /app
 COPY --from=build /out/orders /app/orders
 COPY --from=build /out/transportbench /app/transportbench
+COPY --from=build /out/brokerstress /app/brokerstress
 CMD ["sh", "-c", "sleep infinity"]

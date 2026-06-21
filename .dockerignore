@@ -1,0 +1,7 @@
+.git
+.codex
+.agents
+certs
+policy-data
+results
+*.log

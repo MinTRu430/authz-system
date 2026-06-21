@@ -5,12 +5,17 @@ POLICY_SERVERS := policy-server-1 policy-server-2 policy-server-3
 FINAL_N ?= 200
 FINAL_C ?= 10
 FINAL_WARMUP ?= 20
+BROKER_STRESS_N ?= 50000
+BROKER_CONSUME_N ?= 50000
+BROKER_STRESS_CONCURRENCIES ?= 10,50,100
+BROKER_FAILOVER_N ?= 50000
 
 
 .PHONY: certs up down build restart logs status audit audit-all reload reload-all \
 	policy-versions policy-activate policy-rollback policy-sync-status \
 	test test-grpc test-rest test-kafka test-nats test-dlq test-all \
 	bench load load-deny load-matrix final-functional final-bench final-suite final-hardening-functional final-hardening-bench final-hardening-suite final-run \
+	broker-stress broker-stress-smoke broker-failover-stress broker-failover-stress-smoke \
 	failover \
 	degrade-down degrade-up degrade-test degrade-rest-test degrade-kafka-test degrade-kafka-consume-test degrade-nats-test degrade-nats-consume-test degrade-all \
 	chaos-reload chaos-policy-flap
@@ -232,6 +237,34 @@ load-deny:
 
 load-matrix:
 	$(ROOT_DIR)/scripts/load-matrix.sh charge 5000
+
+
+broker-stress:
+	BROKER_STRESS_N=$(BROKER_STRESS_N) \
+	BROKER_CONSUME_N=$(BROKER_CONSUME_N) \
+	BROKER_STRESS_CONCURRENCIES=$(BROKER_STRESS_CONCURRENCIES) \
+	$(ROOT_DIR)/scripts/broker-stress.sh
+
+
+broker-stress-smoke:
+	BROKER_STRESS_N=100 \
+	BROKER_CONSUME_N=100 \
+	BROKER_STRESS_CONCURRENCIES=2,5 \
+	$(ROOT_DIR)/scripts/broker-stress.sh
+
+
+broker-failover-stress:
+	BROKER_FAILOVER_N=$(BROKER_FAILOVER_N) \
+	$(ROOT_DIR)/scripts/broker-failover-stress.sh
+
+
+broker-failover-stress-smoke:
+	BROKER_FAILOVER_N=10000 \
+	BROKER_FAILOVER_PROBE_N=50 \
+	BROKER_FAILOVER_CONCURRENCY=5 \
+	BROKER_FAILOVER_PROBE_CONCURRENCY=5 \
+	BROKER_FAILOVER_PACE=5ms \
+	$(ROOT_DIR)/scripts/broker-failover-stress.sh
 
 
 

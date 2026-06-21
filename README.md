@@ -391,6 +391,34 @@ make -C deploy load-matrix
 make -C deploy bench
 ```
 
+Нагрузочные испытания Kafka и NATS:
+
+```bash
+make -C deploy broker-stress
+```
+
+Они выполняют публикацию, полный путь до обработчика и отдельную нагрузку потребления для 50000 сообщений при параллелизме 10, 50 и 100. Также сравниваются режимы с кэшем и без кэша.
+
+Короткая проверка:
+
+```bash
+make -C deploy broker-stress-smoke
+```
+
+Переключение реплик `policy-server` под продолжающейся брокерной нагрузкой:
+
+```bash
+make -C deploy broker-failover-stress
+```
+
+Короткая проверка:
+
+```bash
+make -C deploy broker-failover-stress-smoke
+```
+
+Результаты сохраняются в `results/broker-stress/` и `results/broker-failover-stress/` в JSON и Markdown. Подробное описание находится в [`docs/broker-stress.md`](docs/broker-stress.md).
+
 ## Итоговые воспроизводимые эксперименты
 
 Функциональная матрица для gRPC, REST, Kafka и NATS:

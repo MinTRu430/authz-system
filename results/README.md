@@ -7,6 +7,8 @@
 - `results/final/<timestamp>/functional/`
 - `results/final/<timestamp>/bench/`
 - пользовательские прогоны через `RESULT_DIR=...`, например `results/final_smoke5/`
+- `results/broker-stress/<timestamp>/` для Kafka/NATS publish, consume и полного пути;
+- `results/broker-failover-stress/<timestamp>/` для переключения реплик под нагрузкой.
 
 Основные файлы:
 
@@ -15,5 +17,7 @@
 - `payments_metrics_*.prom` и `policy_metrics_*.prom` для снимков Prometheus;
 - `audit_*.log` для подтверждения записей журнала аудита при перезагрузке политик;
 - `docker_*.log` для журналов служб и подтверждения асинхронной обработки.
+- `*.json` для машиночитаемых результатов брокерных нагрузочных испытаний;
+- `summary.md` для сравнительной таблицы задержек, пропускной способности, успешных операций и ошибок.
 
 Итоговая сводка хранится в `results/summary.md`.

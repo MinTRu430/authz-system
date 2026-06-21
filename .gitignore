@@ -26,6 +26,8 @@ policy-data/*
 results/final*/
 results/degrade*/
 results/load*/
+results/broker-stress*/
+results/broker-failover-stress*/
 !results/README.md
 !results/summary.md
 
@@ -35,6 +37,3 @@ results/load*/
 
 # OS
 .DS_Store
-
-# Docker
-**/.dockerignore
